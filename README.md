@@ -1,4 +1,4 @@
-Sniffs passwords and hashes from an interface or pcap.
+Sniffs passwords and hashes from an interface or pcap. Work in progress.
 
 
 Auto-detect the interface to sniff
