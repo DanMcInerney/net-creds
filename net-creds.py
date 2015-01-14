@@ -12,9 +12,9 @@ from base64 import b64decode
 from urllib import unquote
 from subprocess import Popen, PIPE
 from collections import OrderedDict
-from IPython import embed
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
+#from IPython import embed
 
 DN = open(devnull, 'w')
 pkt_frag_loads = OrderedDict()
@@ -24,6 +24,7 @@ def parse_args():
    parser = argparse.ArgumentParser()
    parser.add_argument("-i", "--interface", help="Choose an interface")
    parser.add_argument("-p", "--pcap", help="Parse info from a pcap file; -p <pcapfilename>")
+   parser.add_argument("-f", "--filterip", help="Do not sniff packets from this IP address; -f 192.168.0.4")
    return parser.parse_args()
 
 def iface_finder():
@@ -95,10 +96,11 @@ def pkt_parser(pkt):
         return
 
     elif pkt.haslayer(TCP) and pkt.haslayer(Raw):
-        #print pkt.summary()
+        print pkt.summary()
 
         ack = str(pkt[TCP].ack)
         src_ip_port = str(pkt[IP].src) + ':' + str(pkt[TCP].sport)
+        dst_ip_port = str(pkt[IP].dst) + ':' + str(pkt[TCP].sport)
         load = pkt[Raw].load
         frag_remover(ack, load)
         pkt_frag_loads[src_ip_port] = frag_joiner(ack, src_ip_port, load)
@@ -113,17 +115,17 @@ def pkt_parser(pkt):
             ftp_user = re.match(r'USER (.*)\\r\\n', str_load)
             ftp_pass = re.match(r'PASS (.*)\\r\\n', str_load)
             if ftp_user:
-                print 'FTP User: ', ftp_user.group(1)
+                print '  FTP User: ', ftp_user.group(1)
             if ftp_pass:
-                print 'FTP Pass: ', ftp_pass.group(1)
+                print '  FTP Pass: ', ftp_pass.group(1)
 
             # IRC
             irc_user_re = re.match(r'NICK (\w)', str_load)
             irc_pass_re = re.match(r'NS IDENTIFY (\w)', str_load)
             if irc_user_re:
-                print 'IRC nick: ', irc_user_re.group(1)
+                print '  IRC nick: ', irc_user_re.group(1)
             if irc_pass_re:
-                print 'IRC pass: ', irc_user_re.group(1)
+                print '  IRC pass: ', irc_user_re.group(1)
 
         # HTTP
         http_parser(full_load, str_load)
@@ -156,13 +158,13 @@ def http_parser(full_load, str_load):
             cmd = request.command
             path = request.path
             host = request.headers['host']
+            data = str_load.split(r'\r\n\r\n', 1)[1]
             cmd_url = cmd + ' ' + host + path
             url_printer(cmd_url)
 
-
-            data = str_load.split(r'\r\n\r\n', 1)[1]
             if data != '':
                 user_passwd = get_login_pass(data)
+                print ' ',data[:175]
             # Grab authorization headers
             if 'authorization' in request.headers:
                 auth_header = request.headers['authorization']
@@ -180,12 +182,10 @@ def http_parser(full_load, str_load):
         ################## DEBUG ########################
 
     if user_passwd != None:
-        print 'User:', user_passwd[0]
-        print 'Pass:', user_passwd[1]
-        print ''
+        print '  User:', user_passwd[0]
+        print '  Pass:', user_passwd[1]
     if auth_header != None:
-        print auth_header
-        print ''
+        print ' ',auth_header
 
 def url_printer(cmd_url):
     '''
@@ -195,7 +195,7 @@ def url_printer(cmd_url):
     if any(cmd_url.endswith(i) for i in d):
         return
 
-    print cmd_url[:175]
+    print ' ',cmd_url[:175]
 
 def get_login_pass(data):
     '''
@@ -256,7 +256,7 @@ def main(args):
         for pkt in pcap:
             pkt_parser(pkt)
     else:
-        sniff(iface=conf.iface, prn=pkt_parser, store=0)
+        sniff(iface=conf.iface, prn=pkt_parser, filter="not host %s" % args.filterip, store=0)
 
 
 if __name__ == "__main__":
