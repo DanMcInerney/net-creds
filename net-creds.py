@@ -256,7 +256,10 @@ def main(args):
         for pkt in pcap:
             pkt_parser(pkt)
     else:
-        sniff(iface=conf.iface, prn=pkt_parser, filter="not host %s" % args.filterip, store=0)
+        if args.filterip:
+            sniff(iface=conf.iface, prn=pkt_parser, filter="not host %s" % args.filterip, store=0)
+        else:
+            sniff(iface=conf.iface, prn=pkt_parser, store=0)
 
 
 if __name__ == "__main__":
