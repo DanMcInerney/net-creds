@@ -236,15 +236,35 @@ def http_parser(full_load, str_load):
                 user_passwd = get_login_pass(data)
                 print ' ',data[:175]
 
-            # Grab authorization headers
-            if 'authorization' in request.headers:
-                auth_header = request.headers['authorization']
-                if ' NTLM' in auth_header:
-                    ntlm_hash = auth_header.strip(' NTLM ')
-                    print ntlm_hash
+            # Grab authorization headers s for server c for client
+            if 'authorization' in request.headers:# or 'proxy-authorization' in request.headers:
+                if 'NTLM ' in request.headers['authorization']:
+                    c_ntlm_b64 = request.headers['authorization'].replace('NTLM ', '')
+                    try:
+                        decoded_c_ntlm = b64decode(c_ntlm_b64)
+                        print 'DECODED:', decoded_c_ntlm
+                        # Third pkt from client in 3 way handshake
+                        ntlm3_re = re.search('NTLMSSP\x00\x03\x00\x00\x00(.+)', decoded_c_ntlm, re.DOTALL)
+                        if ntlm3_re:
+                            print ntlm3_re.group(1)
+                        print 'USERNAME:', decoded_c_ntlm[60:64].encode('hex')
+                    except Exception as e:
+                        print '\n' + str(e)
 
-                # Get NTLM over HTTP
-                #if ' NTLM' in auth_header:
+                   # # First pkt from client in 3 way handshake
+                   # ntlm1_re = re.search('NTLMSSP\x00\x01\x00\x00\x00(.+)', decoded_c_ntlm)
+                   # if ntlm1_re:
+                   #     print repr(ntlm1_re.group(1))
+                   #     print repr(decoded_c_ntlm)
+
+
+            if 'www-authenticate' in request.headers:
+                if 'NTLM ' in request.headers['www-authenticate']:
+                    s_ntlm_b64 = request.headers['www-authenticate'].replace('NTLM ', '')
+                    decoded_s_ntlm = b64decode(c_ntlm_b64)
+                    ntlm2_re = re.search('NTLMSSP\x00\x02\x00\x00\x00(.+)', decoded_s_ntlm, re.DOTALL)
+
+                    #print decoded_s_ntlm.encode('hex')
 
         ################## DEBUG ########################
         except Exception as e:
@@ -298,18 +318,17 @@ def get_login_pass(data):
     if user and passwd:
         return (user, passwd)
 
-def decode(str_load):
+def decode64(str_load):
+    '''
+    Decode base64 strings
+    '''
     #remove \r\n\r\n
-    print str_load
     load = str_load.replace(r'\r\n', '')
-    print 'this wne to b64decode', load
     try:
         decoded = b64decode(load)#.replace('\x00', ' ')#[1:] # delete space at beginning
     except Exception as e:
         print str(e)
         decoded = None
-    # Test to see if decode worked
-    #if '@' in decoded:
     if decoded != None:
         print '    Decoded: %s' % decoded
 
