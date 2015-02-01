@@ -6,9 +6,11 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import *
 conf.verb=0
 from sys import exit
+#import itertools
+import struct
 import argparse
 import signal
-from base64 import b64decode
+import base64
 from urllib import unquote
 from subprocess import Popen, PIPE
 from collections import OrderedDict
@@ -19,6 +21,10 @@ from StringIO import StringIO
 DN = open(devnull, 'w')
 pkt_frag_loads = OrderedDict()
 mail_auth = None
+
+# Regexs
+msg2_header_re = "(www-|proxy-)authenticate"
+msg3_header_re = "(www-|proxy-)authorization"
 
 def parse_args():
    """Create the arguments"""
@@ -198,96 +204,201 @@ def irc_logins(str_load, src_ip_port, dst_ip_port):
     if irc_pass_re:
         print '[%s > %s] IRC pass: ' % (src_ip_port, dst_ip_port), irc_user_re.group(1).strip()
 
-class HTTPRequest(BaseHTTPRequestHandler):
-    '''
-    Parse out the HTTP headers and body
-    '''
-    def __init__(self, full_load):
-        self.rfile = StringIO(full_load)
-        self.raw_requestline = self.rfile.readline()
-        self.error_code = self.error_message = None
-        self.parse_request()
-
-    def send_error(self, code, message):
-        self.error_code = code
-        self.error_message = message
-
 def http_parser(full_load, str_load):
     '''
     Pull out pertinent info from the parsed HTTP packet data
     '''
+    # NTLMSSP can uses 401 or 407
     user_passwd = None
-    auth_header = None
-    http_ntlm = None
-    request = HTTPRequest(full_load)
+    http_url_req = None
+    host = None
+    http_methods = ['GET ', 'POST ', 'CONNECT ', 'TRACE ', 'TRACK ', 'PUT ', 'DELETE ', 'HEAD ']
+    http_line, header_lines, body = parse_http_load(full_load)
+    headers = headers_to_dict(header_lines)
+    method, path = parse_http_line(http_line, http_methods)
+    http_url_req = get_http_url(method, path, headers)
+    if http_url_req:
+        print http_url_req
 
-    if request.error_code == None: # What about 401 headers like NTLM over HTTP uses?
-        try:
-            cmd = request.command
-            path = request.path
-            host = request.headers['host']
-            data = str_load.split(r'\r\n\r\n', 1)
-            if len(data) > 1 and type(data) == list:
-                data = data[1]
-            cmd_url = cmd + ' ' + host + path
-            url_printer(cmd_url)
+    if body != '':
+        user_passwd = get_login_pass(body)
 
-            if data != '':
-                user_passwd = get_login_pass(data)
-                print ' ',data[:175]
+    for header in headers:
+        ntlm_chal_header = re.search(msg2_header_re, header)
+        ntlm_resp_header = re.search(msg3_header_re, header)
+        if ntlm_chal_header or ntlm_resp_header:
+            break
 
-            # Grab authorization headers s for server c for client
-            if 'authorization' in request.headers:# or 'proxy-authorization' in request.headers:
-                if 'NTLM ' in request.headers['authorization']:
-                    c_ntlm_b64 = request.headers['authorization'].replace('NTLM ', '')
-                    try:
-                        decoded_c_ntlm = b64decode(c_ntlm_b64)
-                        print 'DECODED:', decoded_c_ntlm
-                        # Third pkt from client in 3 way handshake
-                        ntlm3_re = re.search('NTLMSSP\x00\x03\x00\x00\x00(.+)', decoded_c_ntlm, re.DOTALL)
-                        if ntlm3_re:
-                            print ntlm3_re.group(1)
-                        print 'USERNAME:', decoded_c_ntlm[60:64].encode('hex')
-                    except Exception as e:
-                        print '\n' + str(e)
+    # Type 2 challenge from server
+    if ntlm_chal_header != None:
+        header_val2 = request.headers[ntlm_chal_header.group()]
+        header_val2 = header_val2.split(' ', 1)
+        print 'MSG 2 HEADER VALS:', header_val2[0], header_val2[1]
+        # The header value can either start with NTLM or Negotiate
+        if header_val2[0] == 'NTLM' or header_val2[0] == 'Negotiate':
+            msg2 = header_val2[1]
+            print 'msg2', msg2
+            chal_and_flags = parse_NTLM_CHALLENGE_MESSAGE(msg2)
+            print 'Type 2:', chal_and_flags
 
-                   # # First pkt from client in 3 way handshake
-                   # ntlm1_re = re.search('NTLMSSP\x00\x01\x00\x00\x00(.+)', decoded_c_ntlm)
-                   # if ntlm1_re:
-                   #     print repr(ntlm1_re.group(1))
-                   #     print repr(decoded_c_ntlm)
+    # Type 3 response from client
+    if ntlm_resp_header != None:
+        header_val3 = request.headers[ntlm_resp_header.group()]
+        header_val3 = header_val3.split(' ', 1)
+        # The header value can either start with NTLM or Negotiate
+        if header_val3[0] == 'NTLM' or header_val3[0] == 'Negotiate':
+            msg3 = header_val3[1]
+            #print 'msg3', msg3
+            #chal_and_flags = parse_NTLM_CHALLENGE_MESSAGE(msg3)
+            #print 'Type 3:', chal_and_flags
 
-
-            if 'www-authenticate' in request.headers:
-                if 'NTLM ' in request.headers['www-authenticate']:
-                    s_ntlm_b64 = request.headers['www-authenticate'].replace('NTLM ', '')
-                    decoded_s_ntlm = b64decode(c_ntlm_b64)
-                    ntlm2_re = re.search('NTLMSSP\x00\x02\x00\x00\x00(.+)', decoded_s_ntlm, re.DOTALL)
-
-                    #print decoded_s_ntlm.encode('hex')
-
-        ################## DEBUG ########################
-        except Exception as e:
-            print ' ****************** ERROR'
-            print str(e)
-            print str_load[:100]
-        ################## DEBUG ########################
-
+    ############ PRINT STUFF ###############
     if user_passwd != None:
         print '  User:', user_passwd[0]
         print '  Pass:', user_passwd[1]
-    if auth_header != None:
-        print ' ',auth_header
+    #if cmd_url:
+    #    print cmd_url
 
-def url_printer(cmd_url):
+def get_http_url(method, path, headers):
+    '''
+    Get the HTTP method + URL from requests
+    '''
+    if method != None and path != None:
+
+        if 'host' in headers:
+            host = headers['host']
+        else:
+            host = None
+
+        # Make sure the path doesn't repeat the host header
+        if host != None and not re.match('(http(s)?://)?'+host, path):
+            http_url_req = method + ' ' + host + path
+        else:
+            http_url_req = method + ' ' + path
+
+            http_url_req = url_filter(http_url_req)
+
+            return http_url_req
+
+def headers_to_dict(header_lines):
+    '''
+    Convert the list of header lines into a dictionary
+    '''
+    headers = {}
+    # Incomprehensible list comprehension flattens list of headers
+    # that are each split at ': '
+    # http://stackoverflow.com/a/406296
+    headers_list = [x for line in header_lines for x in line.split(': ', 1)]
+    headers_dict = dict(zip(headers_list[0::2], headers_list[1::2]))
+    # Make the header key (like "Content-Length") lowercase
+    for header in headers_dict:
+        headers[header.lower()] = headers_dict[header]
+
+    return headers
+
+def get_host(header_lines):
+    '''
+    Parse out the host header
+    '''
+    for line in header_lines:
+        if line.lower().startswith('host: '):
+            host = line.split(': ', 1)[1]
+            return host
+
+def parse_http_line(http_line, http_methods):
+    '''
+    Parse the header with the HTTP method in it
+    '''
+    http_line_split = http_line.split()
+    method = ''
+    path = ''
+
+    # Accounts for pcap files that might start with a fragment
+    # so the first line might be just text data
+    if len(http_line_split) > 1:
+        method = http_line_split[0]
+        path = http_line_split[1]
+
+    # This check exists because responses are much different than requests e.g.:
+    #     HTTP/1.1 407 Proxy Authentication Required ( Access is denied.  )
+    # Add a space to method because there's a space in http_methods items
+    # to avoid false+
+    if method+' ' not in http_methods:
+        method = None
+        path = None
+
+    return method, path
+
+def parse_http_load(full_load):
+    '''
+    Split the raw load into list of headers and body string
+    '''
+    try:
+        headers, body = full_load.split("\r\n\r\n", 1)
+    except ValueError:
+        headers = full_load
+        body = ''
+    except:
+        raise
+    header_lines = headers.split("\r\n")
+    http_line = header_lines[0]
+    header_lines = [line for line in header_lines if line != http_line]
+
+    return http_line, header_lines, body
+
+
+def get_http_line(header_lines, http_methods):
+    '''
+    Get the header with the http command
+    '''
+    for header in header_lines:
+        for method in http_methods:
+            if method in header:
+                http_line = header
+                return http_line
+
+def parse_NTLM_CHALLENGE_MESSAGE(msg2):
+    '''
+    Parse the server challenge
+    '''
+    msg2 = base64.decodestring(msg2)
+    Signature = msg2[0:8]
+    msg_type = struct.unpack("<I",msg2[8:12])[0]
+    assert(msg_type==2)
+    TargetNameLen = struct.unpack("<H",msg2[12:14])[0]
+    TargetNameMaxLen = struct.unpack("<H",msg2[14:16])[0]
+    TargetNameOffset = struct.unpack("<I",msg2[16:20])[0]
+    TargetName = msg2[TargetNameOffset:TargetNameOffset+TargetNameMaxLen]
+    NegotiateFlags = struct.unpack("<I",msg2[20:24])[0]
+    ServerChallenge = msg2[24:32]
+    Reserved = msg2[32:40]
+    if NegotiateFlags & NTLM_NegotiateTargetInfo:
+        TargetInfoLen = struct.unpack("<H",msg2[40:42])[0]
+        TargetInfoMaxLen = struct.unpack("<H",msg2[42:44])[0]
+        TargetInfoOffset = struct.unpack("<I",msg2[44:48])[0]
+        TargetInfo = msg2[TargetInfoOffset:TargetInfoOffset+TargetInfoLen]
+        i=0
+        TimeStamp = '\0'*8
+        while(i<TargetInfoLen):
+            AvId = struct.unpack("<H",TargetInfo[i:i+2])[0]
+            AvLen = struct.unpack("<H",TargetInfo[i+2:i+4])[0]
+            AvValue = TargetInfo[i+4:i+4+AvLen]
+            i = i+4+AvLen
+            if AvId == NTLM_MsvAvTimestamp:
+                TimeStamp = AvValue 
+    #~ print AvId, AvValue.decode('utf-16')
+    return (ServerChallenge, NegotiateFlags)
+
+def url_filter(http_url_req):
     '''
     Filter out the common but uninteresting URLs
     '''
-    d = ['.jpg', '.jpeg', '.gif', '.png', '.css', '.ico', '.js', '.svg', '.woff']
-    if any(cmd_url.endswith(i) for i in d):
-        return
-
-    print ' ',cmd_url[:175]
+    if http_url_req:
+        d = ['.jpg', '.jpeg', '.gif', '.png', '.css', '.ico', '.js', '.svg', '.woff']
+        if any(http_url_req.endswith(i) for i in d):
+            return
+        else:
+            return http_url_req
 
 def get_login_pass(data):
     '''
@@ -343,10 +454,6 @@ def main(args):
     #signal.signal(signal.SIGINT, signal_handler)
     #####################################################
 
-    # Check for root
-    if geteuid():
-        exit('[-] Please run as root')
-
     #Find the active interface
     if args.interface:
         conf.iface = args.interface
@@ -362,6 +469,10 @@ def main(args):
         for pkt in pcap:
             pkt_parser(pkt)
     else:
+        # Check for root
+        if geteuid():
+            exit('[-] Please run as root')
+
         if args.filterip:
             sniff(iface=conf.iface, prn=pkt_parser, filter="not host %s" % args.filterip, store=0)
         else:
