@@ -30,11 +30,12 @@ from StringIO import StringIO
 
 DN = open(devnull, 'w')
 pkt_frag_loads = OrderedDict()
+challenge_acks = OrderedDict()
 mail_auth = None
 
 # Regexs
-msg2_header_re = "(www-|proxy-)authenticate"
-msg3_header_re = "(www-|proxy-)authorization"
+msg2_header_re = "(www-|proxy-)?authenticate"
+msg3_header_re = "(www-|proxy-)?authorization"
 
 def parse_args():
    """Create the arguments"""
@@ -114,6 +115,7 @@ def pkt_parser(pkt):
     elif pkt.haslayer(TCP) and pkt.haslayer(Raw):
         #print pkt.summary()
         ack = str(pkt[TCP].ack)
+        seq = str(pkt[TCP].seq)
         src_ip_port = str(pkt[IP].src) + ':' + str(pkt[TCP].sport)
         dst_ip_port = str(pkt[IP].dst) + ':' + str(pkt[TCP].dport)
         load = pkt[Raw].load
@@ -136,21 +138,26 @@ def pkt_parser(pkt):
                 print '  FTP User: ', ftp_user.group(1).strip()
             if ftp_pass:
                 print '  FTP Pass: ', ftp_pass.group(1).strip()
+            if ftp_pass or ftp_user:
+                return
 
             # Mail
-            mail_logins(full_load, str_load, dst_ip_port, src_ip_port)
+            parsed = mail_logins(full_load, str_load, dst_ip_port, src_ip_port)
+            if parsed == True:
+                return
 
             # IRC
             irc_logins(str_load, src_ip_port, dst_ip_port)
 
         # HTTP
-        http_parser(full_load, str_load, src_ip_port)
+        http_parser(full_load, str_load, src_ip_port, ack, seq)
 
 def mail_logins(full_load, str_load, src_ip_port, dst_ip_port):
     '''
     Catch IMAP, POP, and SMTP logins
     '''
     global mail_auth
+    found = False
 
     # SMTP can use lots of different auth patterns, sometimes it passes the user
     # and password in one pkt, sometimes 2 pkts for ex.
@@ -158,30 +165,36 @@ def mail_logins(full_load, str_load, src_ip_port, dst_ip_port):
         # SMTP auth was successful
         if '235' in str_load and 'auth' in str_load.lower():
             print '[%s] SMTP authentication successful' % dst_ip_port
+            found = True
             mail_auth = None
         # SMTP failed
         elif str_load.startswith('535 '):
             print '[%s] SMTP authentication failed' % dst_ip_port
+            found = True
             mail_auth = None
         # IMAP/POP/SMTP failed
         elif 'auth' in str_load.lower() and 'fail' in str_load.lower():
             print '[%s] mail authentication failed' % dst_ip_port
+            found = True
             mail_auth = None
         # IMAP auth success
         elif ' OK [' in str_load:
             print '[%s] IMAP authentication successful' % dst_ip_port
+            found = True
             mail_auth = None
         # IMAP auth failure
         elif ' NO ' in str_load and 'fail' in str_load.lower():
             print '[%s] IMAP authentication failed' % dst_ip_port
+            found = True
             mail_auth = None
 
     # check if this packet is part of the auth packet tcp stream
     elif mail_auth == dst_ip_port:
         str_load = str_load.replace(r'\r\n', '')
         print '[%s > %s] mail auth: %s' % (src_ip_port, dst_ip_port, str_load)
+        found = True
         try:
-            decoded = b64decode(str_load).replace('\x00', ' ')#[1:] # delete space at beginning
+            decoded = base64.b64decode(str_load).replace('\x00', ' ')#[1:] # delete space at beginning
         except Exception:
             decoded = None
         if decoded != None:
@@ -195,13 +208,18 @@ def mail_logins(full_load, str_load, src_ip_port, dst_ip_port):
             if len(smtp_line) == 3 and smtp_line[2].lower().replace(r'\r\n', '') not in ['plain', 'login']:
                 smtp_auth = smtp_line[2]
                 print '[%s > %s] SMTP auth: %s' % (src_ip_port, dst_ip_port, smtp_auth)
+                found = True
                 try:
-                    decoded = b64decode(smtp_auth).replace('\x00', ' ')#[1:] # delete space at beginning
+                    decoded = base64.b64decode(smtp_auth).replace('\x00', ' ')#[1:] # delete space at beginning
                 except Exception:
                     decoded = None
                 if decoded != None:
                     print '[%s > %s] Decoded:' % (src_ip_port, dst_ip_port), decoded
+                    found = True
             mail_auth = dst_ip_port
+
+    if found == True:
+        return True
 
 def irc_logins(str_load, src_ip_port, dst_ip_port):
     '''
@@ -214,17 +232,16 @@ def irc_logins(str_load, src_ip_port, dst_ip_port):
     if irc_pass_re:
         print '[%s > %s] IRC pass: ' % (src_ip_port, dst_ip_port), irc_user_re.group(1).strip()
 
-def http_parser(full_load, str_load, src_ip_port):
+def http_parser(full_load, str_load, src_ip_port, ack, seq):
     '''
     Pull out pertinent info from the parsed HTTP packet data
     '''
-    # NTLMSSP can uses 401 or 407
     user_passwd = None
     http_url_req = None
     host = None
     challenge = None
     response = None
-    http_methods = ['GET ', 'POST ', 'CONNECT ', 'TRACE ', 'TRACK ', 'PUT ', 'DELETE ', 'HEAD ']
+    http_methods = ['GET ', 'POST ', 'CONNECT ', 'TRACE ', 'TRACK ', 'PUT ', 'DELETE ', 'HEAD '] 
     http_line, header_lines, body = parse_http_load(full_load)
     headers = headers_to_dict(header_lines)
     method, path = parse_http_line(http_line, http_methods)
@@ -244,14 +261,15 @@ def http_parser(full_load, str_load, src_ip_port):
 
     # Type 2 challenge from server
     if ntlm_chal_header != None:
-        challenge = parse_chal_msg(headers, ntlm_chal_header.group())
-        if challenge != None:
-            ################ ADD TO PKT FRAGMENT DICT ########### WORK HERE
-            pass
+        chal_header = ntlm_chal_header.group()
+        challenge = parse_chal_msg(headers, chal_header, ack)
 
     # Type 3 response from client
-    if ntlm_resp_header != None:
-        response = parse_resp_msg(headers, ntlm_resp_header.group())
+    elif ntlm_resp_header != None:
+        resp_header = ntlm_resp_header.group()
+        hash_type, crackable_hash = parse_resp_msg(headers, resp_header, seq)
+        if hash_type and crackable_hash:
+            print  '  ', hash_type, crackable_hash
 
     ############ PRINT STUFF ###############
     if user_passwd != None:
@@ -259,10 +277,6 @@ def http_parser(full_load, str_load, src_ip_port):
         print '  Pass:', user_passwd[1]
     if http_url_req:
         print http_url_req
-    if challenge:
-        print pkt_frag_loads[src_ip_port]
-        pass
-        #print challenge
 
 def get_http_url(method, path, headers):
     '''
@@ -273,17 +287,17 @@ def get_http_url(method, path, headers):
         if 'host' in headers:
             host = headers['host']
         else:
-            host = None
+            host = ''
 
         # Make sure the path doesn't repeat the host header
-        if host != None and not re.match('(http(s)?://)?'+host, path):
+        if host != '' and not re.match('(http(s)?://)?'+host, path):
             http_url_req = method + ' ' + host + path
         else:
             http_url_req = method + ' ' + path
 
-            http_url_req = url_filter(http_url_req)
+        http_url_req = url_filter(http_url_req)
 
-            return http_url_req
+        return http_url_req
 
 def headers_to_dict(header_lines):
     '''
@@ -352,28 +366,41 @@ def get_http_line(header_lines, http_methods):
                 http_line = header
                 return http_line
 
-def parse_chal_msg(headers, chal_header):
+def parse_chal_msg(headers, chal_header, ack):
     '''
     Parse the server challenge
     https://code.google.com/p/python-ntlm/source/browse/trunk/python26/ntlm/ntlm.py
     '''
+    global challenge_acks
+
     header_val2 = headers[chal_header]
     header_val2 = header_val2.split(' ', 1)
     # The header value can either start with NTLM or Negotiate
     if header_val2[0] == 'NTLM' or header_val2[0] == 'Negotiate':
         msg2 = header_val2[1]
-    msg2 = base64.decodestring(msg2)
-    Signature = msg2[0:8]
-    msg_type = struct.unpack("<I",msg2[8:12])[0]
-    assert(msg_type==2)
-    ServerChallenge = msg2[24:32]
-    return ServerChallenge.encode('hex')
+        msg2 = base64.decodestring(msg2)
+        Signature = msg2[0:8]
+        msg_type = struct.unpack("<I",msg2[8:12])[0]
+        assert(msg_type==2)
+        ServerChallenge = msg2[24:32].encode('hex')
 
-def parse_resp_msg(headers, resp_header):
+        # Keep the dict of ack:challenge to less than 50 chals
+        if len(challenge_acks) > 50:
+            challenge_acks.popitem(last=False)
+        challenge_acks[ack] = ServerChallenge
+
+        return ServerChallenge
+
+def parse_resp_msg(headers, resp_header, seq):
     '''
     Parse the client response to the challenge
     '''
-    challenge = 'x'*16
+
+    if seq in challenge_acks:
+        challenge = challenge_acks[seq]
+    else:
+        challenge = 'CHALLENGE NOT FOUND'
+
     header_val3 = headers[resp_header]
     header_val3 = header_val3.split(' ', 1)
     # The header value can either start with NTLM or Negotiate
@@ -381,15 +408,17 @@ def parse_resp_msg(headers, resp_header):
         msg3 = base64.decodestring(header_val3[1])
         # What is this when it's not > 43? Is it msg1?
         if len(msg3) > 43:
+            # Thx to psychomario for below
             lmlen, lmmax, lmoff, ntlen, ntmax, ntoff, domlen, dommax, domoff, userlen, usermax, useroff = struct.unpack("12xhhihhihhihhi", msg3[:44])
             lmhash = binascii.b2a_hex(msg3[lmoff:lmoff+lmlen])
             nthash = binascii.b2a_hex(msg3[ntoff:ntoff+ntlen])
             domain = msg3[domoff:domoff+domlen].replace("\0", "")
             user = msg3[useroff:useroff+userlen].replace("\0", "")
             if lmhash != "0"*48: #NTLM
-                print user+"::"+domain+":"+lmhash+":"+nthash+":"+challenge
+                return "NETNTLMv1", user+"::"+domain+":"+lmhash+":"+nthash+":"+challenge
             else: #NTLMv2
-                print user+"::"+domain+":"+challenge+":"+nthash[:32]+":"+nthash[32:]
+                return "NETNTLMv2", user+"::"+domain+":"+challenge+":"+nthash[:32]+":"+nthash[32:]
+    return None, None
 
 def url_filter(http_url_req):
     '''
@@ -438,7 +467,7 @@ def decode64(str_load):
     #remove \r\n\r\n
     load = str_load.replace(r'\r\n', '')
     try:
-        decoded = b64decode(load)#.replace('\x00', ' ')#[1:] # delete space at beginning
+        decoded = base64.b64decode(load)#.replace('\x00', ' ')#[1:] # delete space at beginning
     except Exception as e:
         print str(e)
         decoded = None
@@ -456,12 +485,6 @@ def main(args):
     #signal.signal(signal.SIGINT, signal_handler)
     #####################################################
 
-    #Find the active interface
-    if args.interface:
-        conf.iface = args.interface
-    else:
-        conf.iface = iface_finder()
-
     # Read packets from either pcap or interface
     if args.pcap:
         try:
@@ -474,6 +497,13 @@ def main(args):
         # Check for root
         if geteuid():
             exit('[-] Please run as root')
+
+        #Find the active interface
+        if args.interface:
+            conf.iface = args.interface
+        else:
+            conf.iface = iface_finder()
+        print '[*] Using interface:', conf.iface
 
         if args.filterip:
             sniff(iface=conf.iface, prn=pkt_parser, filter="not host %s" % args.filterip, store=0)
@@ -492,7 +522,7 @@ if __name__ == "__main__":
             #if b64 != None:
             #    print b64.group()
             #    try:
-            #        decoded = b64decode(b64.group()).replace('\x00', ' ')#[1:] # delete space at beginning
+            #        decoded = base64.b64decode(b64.group()).replace('\x00', ' ')#[1:] # delete space at beginning
             #    except Exception:
             #        decoded = None
             #    if decoded != None:
