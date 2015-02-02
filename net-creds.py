@@ -21,11 +21,7 @@ from StringIO import StringIO
 
 ##################################################################################
 # Left off:
-# NTLM parsing is complete, but need way to track tcp sequence numbers so we can 
-# keep track of chal:resp combos. I don't think adding them to pkt_frag dict works
-# because that dict's keys are src_ip_port not tcp stream. Maybe new dict like 
-# psychomario's ntlmparser? Don't forget to change the variable "challenge"
-# within parse_resp_msg()
+# Don't yet know how snmpv3 works, but snmpv1-2 both seem easy to parse with scapy
 ##################################################################################
 
 DN = open(devnull, 'w')
@@ -108,8 +104,14 @@ def pkt_parser(pkt):
     '''
     global pkt_frag_loads, mail_auth
 
+
     # Get rid of Ethernet pkts with just a raw load cuz these are usually network controls like flow control
-    if pkt.haslayer(Ether) and pkt.haslayer(Raw) and not pkt.haslayer(IP):
+    if pkt.haslayer(Ether) and pkt.haslayer(Raw) and not pkt.haslayer(IP) and not pkt.haslayer(IPv6):
+        return
+
+    # UDP
+    elif pkt.haslayer(SNMP):
+        parse_snmp(pkt[SNMP])
         return
 
     elif pkt.haslayer(TCP) and pkt.haslayer(Raw):
@@ -151,8 +153,8 @@ def pkt_parser(pkt):
             if irc_msg_found == True:
                 return
 
-        # HTTP
-        http_parser(full_load, str_load, src_ip_port, ack, seq)
+        # HTTP and other protocols that run on TCP + a raw load
+        other_parser(full_load, str_load, src_ip_port, ack, seq)
 
 def mail_logins(full_load, str_load, src_ip_port, dst_ip_port):
     '''
@@ -236,7 +238,7 @@ def irc_logins(str_load, src_ip_port, dst_ip_port):
     if irc_pass_re or irc_user_re:
         return True
 
-def http_parser(full_load, str_load, src_ip_port, ack, seq):
+def other_parser(full_load, str_load, src_ip_port, ack, seq):
     '''
     Pull out pertinent info from the parsed HTTP packet data
     '''
@@ -281,6 +283,17 @@ def http_parser(full_load, str_load, src_ip_port, ack, seq):
         print '  Pass:', user_passwd[1]
     if http_url_req:
         print http_url_req
+
+def parse_snmp(snmp_layer):
+    '''
+    Parse out the SNMP version and community string
+    '''
+    #print snmp_layer.version.val
+    #print type(snmp_layer.community.val)
+    print snmp_layer.show()
+    if type(snmp_layer.community.val) == str:
+        #print snmp_layer.version.val
+        print snmp_layer.community.val
 
 def get_http_url(method, path, headers):
     '''
