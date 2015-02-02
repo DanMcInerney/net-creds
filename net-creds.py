@@ -142,12 +142,14 @@ def pkt_parser(pkt):
                 return
 
             # Mail
-            parsed = mail_logins(full_load, str_load, dst_ip_port, src_ip_port)
-            if parsed == True:
+            mail_msg_found = mail_logins(full_load, str_load, dst_ip_port, src_ip_port)
+            if mail_msg_found == True:
                 return
 
             # IRC
-            irc_logins(str_load, src_ip_port, dst_ip_port)
+            irc_msg_found = irc_logins(str_load, src_ip_port, dst_ip_port)
+            if irc_msg_found == True:
+                return
 
         # HTTP
         http_parser(full_load, str_load, src_ip_port, ack, seq)
@@ -231,6 +233,8 @@ def irc_logins(str_load, src_ip_port, dst_ip_port):
         print '[%s > %s] IRC nick: ' % (src_ip_port, dst_ip_port), irc_user_re.group(1).strip()
     if irc_pass_re:
         print '[%s > %s] IRC pass: ' % (src_ip_port, dst_ip_port), irc_user_re.group(1).strip()
+    if irc_pass_re or irc_user_re:
+        return True
 
 def http_parser(full_load, str_load, src_ip_port, ack, seq):
     '''
