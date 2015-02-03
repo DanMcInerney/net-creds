@@ -1,2 +1,4 @@
 *.swp
 *.pyc
+*.pcap
+*.txt

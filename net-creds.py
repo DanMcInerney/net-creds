@@ -21,7 +21,7 @@ from StringIO import StringIO
 
 ##################################################################################
 # Left off:
-# Don't yet know how snmpv3 works, but snmpv1-2 both seem easy to parse with scapy
+# Do kerberos and http basic auth
 ##################################################################################
 
 DN = open(devnull, 'w')
@@ -30,8 +30,8 @@ challenge_acks = OrderedDict()
 mail_auth = None
 
 # Regexs
-msg2_header_re = "(www-|proxy-)?authenticate"
-msg3_header_re = "(www-|proxy-)?authorization"
+authenticate_re = "(www-|proxy-)?authenticate"
+authorization_re = "(www-|proxy-)?authorization"
 
 def parse_args():
    """Create the arguments"""
@@ -109,10 +109,15 @@ def pkt_parser(pkt):
     if pkt.haslayer(Ether) and pkt.haslayer(Raw) and not pkt.haslayer(IP) and not pkt.haslayer(IPv6):
         return
 
-    # UDP
-    elif pkt.haslayer(SNMP):
-        parse_snmp(pkt[SNMP])
-        return
+    if pkt.haslayer(UDP):
+
+        # SNMP community strings
+        if pkt.haslayer(SNMP):
+            parse_snmp(pkt[SNMP])
+            return
+
+        #Kerberos over UDP here
+        ######################
 
     elif pkt.haslayer(TCP) and pkt.haslayer(Raw):
         #print pkt.summary()
@@ -245,55 +250,77 @@ def other_parser(full_load, str_load, src_ip_port, ack, seq):
     user_passwd = None
     http_url_req = None
     host = None
-    challenge = None
-    response = None
-    http_methods = ['GET ', 'POST ', 'CONNECT ', 'TRACE ', 'TRACK ', 'PUT ', 'DELETE ', 'HEAD '] 
+    http_methods = ['GET ', 'POST ', 'CONNECT ', 'TRACE ', 'TRACK ', 'PUT ', 'DELETE ', 'HEAD ']
     http_line, header_lines, body = parse_http_load(full_load)
     headers = headers_to_dict(header_lines)
     method, path = parse_http_line(http_line, http_methods)
     http_url_req = get_http_url(method, path, headers)
+    if http_url_req:
+        print http_url_req
 
     if body != '':
         user_passwd = get_login_pass(body)
 
     if len(headers) == 0:
-        ntlm_chal_header = None
-        ntlm_resp_header = None
+        authenticate_header = None
+        authorization_header = None
     for header in headers:
-        ntlm_chal_header = re.search(msg2_header_re, header)
-        ntlm_resp_header = re.search(msg3_header_re, header)
-        if ntlm_chal_header or ntlm_resp_header:
+        authenticate_header = re.match(authenticate_re, header)
+        authorization_header = re.match(authorization_re, header)
+        if authenticate_header or authorization_header:
             break
 
-    # Type 2 challenge from server
-    if ntlm_chal_header != None:
-        chal_header = ntlm_chal_header.group()
-        challenge = parse_chal_msg(headers, chal_header, ack)
+    if authorization_header or authenticate_header:
 
-    # Type 3 response from client
-    elif ntlm_resp_header != None:
-        resp_header = ntlm_resp_header.group()
-        hash_type, crackable_hash = parse_resp_msg(headers, resp_header, seq)
-        if hash_type and crackable_hash:
-            print  '  ', hash_type, crackable_hash
+        # NETNTLM
+        parse_ntlm(authenticate_header, authorization_header, headers, ack, seq)
+
+        # Basic Auth
+        parse_basic_auth(headers, authorization_header)
+
+        # Kerberos over TCP?
+        #####################
 
     ############ PRINT STUFF ###############
     if user_passwd != None:
         print '  User:', user_passwd[0]
         print '  Pass:', user_passwd[1]
-    if http_url_req:
-        print http_url_req
+
+def parse_basic_auth(headers, authorization_header):
+    '''
+    Parse basic authentication over HTTP
+    '''
+    if authorization_header:
+        header_val = headers[authorization_header.group()]
+        b64_auth_re = re.match('basic (.+)', header_val, re.IGNORECASE)
+        if b64_auth_re != None:
+            basic_auth_b64 = b64_auth_re.group(1)
+            basic_auth_creds = base64.decodestring(basic_auth_b64)
+            print '  Basic Authentication:', basic_auth_creds
+
+def parse_ntlm(authenticate_header, authorization_header, headers, ack, seq):
+    '''
+    Parse NTLM hashes out
+    '''
+    # Type 2 challenge from server
+    if authenticate_header != None:
+        chal_header = authenticate_header.group()
+        challenge = parse_ntlm_chal_msg(headers, chal_header, ack)
+
+    # Type 3 response from client
+    elif authorization_header != None:
+        resp_header = authorization_header.group()
+        hash_type, crackable_hash = parse_ntlm_resp_msg(headers, resp_header, seq)
+        if hash_type and crackable_hash:
+            print  '  ', hash_type, crackable_hash
 
 def parse_snmp(snmp_layer):
     '''
     Parse out the SNMP version and community string
     '''
-    #print snmp_layer.version.val
-    #print type(snmp_layer.community.val)
-    print snmp_layer.show()
     if type(snmp_layer.community.val) == str:
-        #print snmp_layer.version.val
-        print snmp_layer.community.val
+        ver = snmp_layer.version.val
+        print '  SNMPv%d community string: %s' % (ver, snmp_layer.community.val)
 
 def get_http_url(method, path, headers):
     '''
@@ -383,7 +410,7 @@ def get_http_line(header_lines, http_methods):
                 http_line = header
                 return http_line
 
-def parse_chal_msg(headers, chal_header, ack):
+def parse_ntlm_chal_msg(headers, chal_header, ack):
     '''
     Parse the server challenge
     https://code.google.com/p/python-ntlm/source/browse/trunk/python26/ntlm/ntlm.py
@@ -408,9 +435,10 @@ def parse_chal_msg(headers, chal_header, ack):
 
         return ServerChallenge
 
-def parse_resp_msg(headers, resp_header, seq):
+def parse_ntlm_resp_msg(headers, resp_header, seq):
     '''
     Parse the client response to the challenge
+    Thanks to psychomario
     '''
 
     if seq in challenge_acks:

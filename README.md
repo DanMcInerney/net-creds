@@ -2,17 +2,17 @@ Sniffs passwords and hashes from an interface or pcap. Work in progress. Accurat
 
 * URLs visited
 * HTTP site logins/passwords
+* HTTP Basic Auth
 * FTP logins/passwords
 * IRC logins/passwords
 * POP logins/passwords
 * IMAP logins/passwords
 * SMTP logins/passwords
-* NTLM over HTTP challenge and response hashes
-
-Adding in future:
-* KERBEROS
 * SNMP community string
-* HTTP Basic Auth
+* NTLM challenge and response hashes
+
+Adding soon:
+* KERBEROS
 
 Auto-detect the interface to sniff
 
