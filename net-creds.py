@@ -230,12 +230,12 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
     # Server responses to client
     # seq always = last ack of tcp stream
     if dst_ip_port in mail_auths:
-        if seq in mail_auths[dst_ip_port]:
+        if seq in mail_auths[dst_ip_port][-1]:
             # look for any kind of auth failure or success
             a_s = '   Mail authentication successful'
             a_f = '   Mail authentication failed'
             # SMTP auth was successful
-            if '235' in full_load and 'auth' in full_load.lower():
+            if full_load.startswith('235') and 'auth' in full_load.lower():
                 # Reversed the dst and src
                 printer(dst_ip_port, src_ip_port, a_s)
                 found = True
@@ -247,7 +247,7 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
                 found = True
                 del mail_auths[dst_ip_port]
             # IMAP/POP/SMTP failed
-            elif 'auth' in full_load.lower() and 'fail' in full_load.lower():
+            elif 'fail' in full_load.lower():
                 # Reversed the dst and src
                 printer(dst_ip_port, src_ip_port, a_f)
                 found = True
@@ -258,34 +258,53 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
                 printer(dst_ip_port, src_ip_port, a_s)
                 found = True
                 del mail_auths[dst_ip_port]
-            # IMAP auth failure
-            elif ' NO ' in full_load and 'fail' in full_load.lower():
-                # Reversed the dst and src
-                printer(dst_ip_port, src_ip_port, a_f)
-                found = True
-                del mail_auths[dst_ip_port]
 
-            mail_auths[dst_ip_port].append(ack)
+           # Just a regular server > client acknowledgement pkt
+           else:
+                # Keep the dictionary less than 100
+                if len(mail_auths) > 100:
+                    mail_auths.popitem(last=False)
+                mail_auths[src_ip_port] = [ack]
 
-    else:
-        # This handles most POP/IMAP/SMTP logins but there's a at least one edge case
-        mail_auth_search = re.match(mail_auth_re, full_load, re.IGNORECASE)
-        if mail_auth_search != None:
-            auth_msg = full_load
-            # IMAP uses the number at the beginning
-            if mail_auth_search.group(1) != None:
-                auth_msg = auth_msg.split()[1:]
+    # Client to server
+    elif src_ip_port in mail_auths:
+        if seq in mail_auths[src_ip_port][-1]:
+            ##### LOOK FOR CREDS HERE
+
+        # Client to server but it's a new TCP seq
+        # This handles most POP/IMAP/SMTP logins but there's at least one edge case
+        else:
+            mail_auth_search = re.match(mail_auth_re, full_load, re.IGNORECASE)
+            if mail_auth_search != None:
+                auth_msg = full_load
+                # IMAP uses the number at the beginning
+                if mail_auth_search.group(1) != None:
+                    auth_msg = auth_msg.split()[1:]
+                else:
+                    auth_msg = auth_msg.split()
+                # Check if its a pkt like AUTH PLAIN dvcmQxIQ==
+                # rather than just an AUTH PLAIN
+                if len(auth_msg) > 2:
+                    mail_creds = ' '.join(auth_msg[2:])
+                    msg = '    Mail authentication: %s' % mail_creds
+                    printer(src_ip_port, dst_ip_port, msg)
+                    mail_decode(src_ip_port, dst_ip_port, mail_creds)
+                    del mail_auths[src_ip_port]
+                    found = True
+
+            # At least 1 mail login style doesn't fit in the original regex
+            # 1 login "username" "password"
             else:
-                auth_msg = auth_msg.split()
-            # Check if its a pkt like AUTH PLAIN dvcmQxIQ==
-            # rather than just an AUTH PLAIN
-            if len(auth_msg) > 2:
-                mail_creds = ' '.join(auth_msg[2:])
-                msg = '    Mail authentication: %s' % mail_creds
-                printer(src_ip_port, dst_ip_port, msg)
-                mail_decode(src_ip_port, dst_ip_port, mail_creds)
-                del mail_auths[src_ip_port]
-                found = True
+                edge_case1 = re.match(mail_auth_re1, full_load, re.IGNORECASE)
+                if edge_case1 != None:
+                    auth_msg = full_load
+                    auth_msg = auth_msg.split()
+                    if 2 < len(auth_msg) < 5:
+                        mail_creds = ' '.join(auth_msg[2:])
+                        msg = '    Mail authentication: %s' % mail_creds
+                        printer(src_ip_port, dst_ip_port, msg)
+                        mail_decode(src_ip_port, dst_ip_port, mail_creds)
+                        found = True
 
             # Pkt was just the initial auth cmd, next pkt from client will hold creds
             else:
@@ -294,19 +313,6 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
                     mail_auths.popitem(last=False)
                 mail_auths[src_ip_port] = [ack]
 
-        # At least 1 mail login style doesn't fit in the original regex
-        # 1 login "username" "password"
-        else:
-            edge_case1 = re.match(mail_auth_re1, full_load, re.IGNORECASE)
-            if edge_case1 != None:
-                auth_msg = full_load
-                auth_msg = auth_msg.split()
-                if 2 < len(auth_msg) < 5:
-                    mail_creds = ' '.join(auth_msg[2:])
-                    msg = '    Mail authentication: %s' % mail_creds
-                    printer(src_ip_port, dst_ip_port, msg)
-                    mail_decode(src_ip_port, dst_ip_port, mail_creds)
-                    found = True
 
     # 2nd+ client auth pkts
     elif src_ip_port in mail_auths:
