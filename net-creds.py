@@ -187,7 +187,8 @@ def mail_decode(src_ip_port, dst_ip_port, mail_creds):
     Decode base64 mail creds
     '''
     try:
-        decoded = base64.b64decode(mail_creds).replace('\x00', ' ').encode('utf8')
+        # ENCODE or DECODE??
+        decoded = base64.b64decode(mail_creds).replace('\x00', ' ').decode('utf8')
         decoded = decoded.replace('\x00', ' ')
     except TypeError:
         decoded = None
@@ -247,7 +248,7 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
                 found = True
                 del mail_auths[dst_ip_port]
             # IMAP/POP/SMTP failed
-            elif 'fail' in full_load.lower():
+            elif ' fail' in full_load.lower():
                 # Reversed the dst and src
                 printer(dst_ip_port, src_ip_port, a_f)
                 found = True
@@ -260,7 +261,7 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
                 del mail_auths[dst_ip_port]
 
            # Just a regular server > client acknowledgement pkt
-           else:
+            else:
                 # Keep the dictionary less than 100
                 if len(mail_auths) > 100:
                     mail_auths.popitem(last=False)
@@ -269,7 +270,9 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
     # Client to server
     elif src_ip_port in mail_auths:
         if seq in mail_auths[src_ip_port][-1]:
-            ##### LOOK FOR CREDS HERE
+            ##### LOOK FOR CREDS HERE in the second+ client>server pkt
+            decoded = base64.b64decode(full_load.strip('\r\n'))
+            print decoded
 
         # Client to server but it's a new TCP seq
         # This handles most POP/IMAP/SMTP logins but there's at least one edge case
@@ -294,25 +297,23 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
 
             # At least 1 mail login style doesn't fit in the original regex
             # 1 login "username" "password"
-            else:
-                edge_case1 = re.match(mail_auth_re1, full_load, re.IGNORECASE)
-                if edge_case1 != None:
-                    auth_msg = full_load
-                    auth_msg = auth_msg.split()
-                    if 2 < len(auth_msg) < 5:
-                        mail_creds = ' '.join(auth_msg[2:])
-                        msg = '    Mail authentication: %s' % mail_creds
-                        printer(src_ip_port, dst_ip_port, msg)
-                        mail_decode(src_ip_port, dst_ip_port, mail_creds)
-                        found = True
+            elif re.match(mail_auth_re1, full_load, re.IGNORECASE) != None:
+                auth_msg = full_load
+                auth_msg = auth_msg.split()
+                if 2 < len(auth_msg) < 5:
+                    mail_creds = ' '.join(auth_msg[2:])
+                    msg = '    Mail authentication: %s' % mail_creds
+                    printer(src_ip_port, dst_ip_port, msg)
+                    mail_decode(src_ip_port, dst_ip_port, mail_creds)
+                    found = True
 
+            # Mail auth regex is none and src_ip_port is not in mail_auths
             # Pkt was just the initial auth cmd, next pkt from client will hold creds
             else:
                 # Keep the dictionary less than 100
                 if len(mail_auths) > 100:
                     mail_auths.popitem(last=False)
                 mail_auths[src_ip_port] = [ack]
-
 
     # 2nd+ client auth pkts
     elif src_ip_port in mail_auths:
@@ -620,14 +621,13 @@ def decode64(str_load):
     load = str_load.replace(r'\r\n', '')
     try:
         decoded = base64.b64decode(load)#.replace('\x00', ' ')#[1:] # delete space at beginning
-    except Exception as e:
-        raise
+    except TypeError:
         decoded = None
     if decoded != None:
         print '    Decoded: %s' % decoded
 
 def printer(src_ip_port, dst_ip_port, msg):
-    print '[%s>%s] %s' % (src_ip_port, dst_ip_port, msg)
+    print '[%s > %s]'.ljust(10) % (src_ip_port, dst_ip_port) + msg
 
 def main(args):
 
