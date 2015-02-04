@@ -17,21 +17,31 @@ from subprocess import Popen, PIPE
 from collections import OrderedDict
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
-#from IPython import embed
+from IPython import embed
 
 ##################################################################################
 # Left off:
-# Do kerberos and http basic auth
+# Do kerberos
+# Fix mail auths so they're not using 1 global var, what if there's multiple
+# connections? Just track the auth and password packets via seq and ack
+# migiht be handling fragments wrong, what if the pcap starts with a fragment
+# how does it handle headers then? seems like it just assumes the fragment is a header
 ##################################################################################
 
 DN = open(devnull, 'w')
 pkt_frag_loads = OrderedDict()
 challenge_acks = OrderedDict()
-mail_auth = None
+mail_auths = OrderedDict()
 
 # Regexs
-authenticate_re = "(www-|proxy-)?authenticate"
-authorization_re = "(www-|proxy-)?authorization"
+authenticate_re = '(www-|proxy-)?authenticate'
+authorization_re = '(www-|proxy-)?authorization'
+ftp_user_re = r'USER (.+)\\r\\n'
+ftp_pw_re = r'PASS (.+)\\r\\n'
+irc_user_re = r'NICK (.+?)(\\r\\n| )'
+irc_pw_re = r'NS IDENTIFY (.+?)(\\r\\n| )'
+mail_auth_re = '(\d+ )?(auth|authenticate) (login|plain)'
+mail_auth_re1 =  '(\d+ )?login '
 
 def parse_args():
    """Create the arguments"""
@@ -50,6 +60,7 @@ def iface_finder():
                 iface = l[4]
                 return iface
     except Exception:
+        raise
         exit('[-] Could not find an internet active interface; please specify one with -i <interface>')
 
 def frag_remover(ack, load):
@@ -58,7 +69,7 @@ def frag_remover(ack, load):
     3 points of limit:
         Number of ip_ports < 50
         Number of acks per ip:port < 25
-        Number of chars in load < 100,000
+        Number of chars in load < 5000
     '''
     global pkt_frag_loads
 
@@ -80,8 +91,8 @@ def frag_remover(ack, load):
     for ip_port in copy_pkt_frag_loads:
         # Keep the load less than 75,000 chars
         for ack in copy_pkt_frag_loads[ip_port]:
-            if len(ack) > 100000:
-                # If load > 100,000 chars, just keep the last 200 chars
+            # If load > 5000 chars, just keep the last 200 chars
+            if len(copy_pkt_frag_loads[ip_port][ack]) > 5000:
                 pkt_frag_loads[ip_port][ack] = pkt_frag_loads[ip_port][ack][-200:]
 
 def frag_joiner(ack, src_ip_port, load):
@@ -102,7 +113,7 @@ def pkt_parser(pkt):
     '''
     Start parsing packets here
     '''
-    global pkt_frag_loads, mail_auth
+    global pkt_frag_loads, mail_auths
 
 
     # Get rid of Ethernet pkts with just a raw load cuz these are usually network controls like flow control
@@ -138,94 +149,186 @@ def pkt_parser(pkt):
         # are 500+ characters
         if 1 < len(str_load) < 750:
 
-            # FTP
-            ftp_user = re.match(r'USER (.+)\\r\\n', str_load)
-            ftp_pass = re.match(r'PASS (.+)\\r\\n', str_load)
-            if ftp_user:
-                print '  FTP User: ', ftp_user.group(1).strip()
-            if ftp_pass:
-                print '  FTP Pass: ', ftp_pass.group(1).strip()
-            if ftp_pass or ftp_user:
+            # Mail
+            mail_creds_found = mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq)
+            if mail_creds_found:
                 return
 
-            # Mail
-            mail_msg_found = mail_logins(full_load, str_load, dst_ip_port, src_ip_port)
-            if mail_msg_found == True:
+            # FTP
+            # FTP USER: xxx PASS: xxx format is copied in some POP implementations
+            ftp_pkt_found = parse_ftp(str_load, dst_ip_port, src_ip_port)
+            if ftp_pkt_found == True:
                 return
 
             # IRC
-            irc_msg_found = irc_logins(str_load, src_ip_port, dst_ip_port)
-            if irc_msg_found == True:
+            irc_creds = irc_logins(str_load, src_ip_port, dst_ip_port)
+            if irc_creds != None:
+                printer(src_ip_port, dst_ip_port, irc_creds)
                 return
 
         # HTTP and other protocols that run on TCP + a raw load
         other_parser(full_load, str_load, src_ip_port, ack, seq)
 
-def mail_logins(full_load, str_load, src_ip_port, dst_ip_port):
+def parse_ftp(str_load, src_ip_port, dst_ip_port):
+    '''
+    Parse out FTP creds
+    '''
+    ftp_user = re.match(ftp_user_re, str_load)
+    ftp_pass = re.match(ftp_pw_re, str_load)
+    if ftp_user:
+        print '[%s]>[%s]   FTP User:' % (src_ip_port, dst_ip_port), ftp_user.group(1).strip()
+        return True
+    if ftp_pass:
+        print '[%s]>[%s]   FTP Pass:' % (src_ip_port, dst_ip_port), ftp_pass.group(1).strip()
+        return True
+
+def mail_decode(src_ip_port, dst_ip_port, mail_creds):
+    '''
+    Decode base64 mail creds
+    '''
+    try:
+        decoded = base64.b64decode(mail_creds).replace('\x00', ' ').encode('utf8')
+        decoded = decoded.replace('\x00', ' ')
+    except TypeError:
+        decoded = None
+    except UnicodeDecodeError:
+        decoded = None
+
+    if decoded != None:
+        msg = '    Decoded: %s' % decoded
+        printer(src_ip_port, dst_ip_port, msg)
+
+def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
     '''
     Catch IMAP, POP, and SMTP logins
     '''
-    global mail_auth
+    # Handle the first packet of mail authentication
+    # if the creds aren't in the first packet, save it in mail_auths
+
+    # Note that some printer() functions reverse the src and dst
+    # so as not to confuse since auth successful pkts necessarily
+    # come from the server and we don't want it to look like the
+    # server authenticated to the client
+
+    # LEFT OFF:
+    # How to organize this? Check if the dst server is stored already then do else: look for authorization pkt?
+    # Problem is that multiple failed attempts are all in the same tcp stream. How to reset consistently 
+    # if auth failure?
+
+    # mail_auths = 192.168.0.2:[first ack, ]
+    global mail_auths
     found = False
 
-    # SMTP can use lots of different auth patterns, sometimes it passes the user
-    # and password in one pkt, sometimes 2 pkts for ex.
-    if mail_auth != None and src_ip_port == mail_auth:
-        # SMTP auth was successful
-        if '235' in str_load and 'auth' in str_load.lower():
-            print '[%s] SMTP authentication successful' % dst_ip_port
-            found = True
-            mail_auth = None
-        # SMTP failed
-        elif str_load.startswith('535 '):
-            print '[%s] SMTP authentication failed' % dst_ip_port
-            found = True
-            mail_auth = None
-        # IMAP/POP/SMTP failed
-        elif 'auth' in str_load.lower() and 'fail' in str_load.lower():
-            print '[%s] mail authentication failed' % dst_ip_port
-            found = True
-            mail_auth = None
-        # IMAP auth success
-        elif ' OK [' in str_load:
-            print '[%s] IMAP authentication successful' % dst_ip_port
-            found = True
-            mail_auth = None
-        # IMAP auth failure
-        elif ' NO ' in str_load and 'fail' in str_load.lower():
-            print '[%s] IMAP authentication failed' % dst_ip_port
-            found = True
-            mail_auth = None
+    # Sometimes mail packets double up on the authentication lines
+    # We just want the lastest one. Ex: "1 auth plain\r\n2 auth plain\r\n"
+    num = full_load.count('auth')
+    if num > 1:
+        lines = full_load.count('\r\n')
+        if lines > 1:
+            full_load = full_load.split('\r\n')[-1]
 
-    # check if this packet is part of the auth packet tcp stream
-    elif mail_auth == dst_ip_port:
-        str_load = str_load.replace(r'\r\n', '')
-        print '[%s > %s] mail auth: %s' % (src_ip_port, dst_ip_port, str_load)
-        found = True
-        try:
-            decoded = base64.b64decode(str_load).replace('\x00', ' ')#[1:] # delete space at beginning
-        except Exception:
-            decoded = None
-        if decoded != None:
-            print '[%s > %s] Decoded:' % (src_ip_port, dst_ip_port), decoded
-    else:
-        mail_auth_re = re.search('auth login|auth plain|authenticate plain', str_load.lower())
-        # SMTP sends packets like '250- auth plain' sometimes that we must filter
-        if mail_auth_re and not str_load.startswith('250'):
-            smtp_line = str_load.split(' ')
-            # check if this is a single line auth like AUTH PLAIN XcvxSVSD24SADFDF==
-            if len(smtp_line) == 3 and smtp_line[2].lower().replace(r'\r\n', '') not in ['plain', 'login']:
-                smtp_auth = smtp_line[2]
-                print '[%s > %s] SMTP auth: %s' % (src_ip_port, dst_ip_port, smtp_auth)
+    # Server responses to client
+    # seq always = last ack of tcp stream
+    if dst_ip_port in mail_auths:
+        if seq in mail_auths[dst_ip_port]:
+            # look for any kind of auth failure or success
+            a_s = '   Mail authentication successful'
+            a_f = '   Mail authentication failed'
+            # SMTP auth was successful
+            if '235' in full_load and 'auth' in full_load.lower():
+                # Reversed the dst and src
+                printer(dst_ip_port, src_ip_port, a_s)
                 found = True
-                try:
-                    decoded = base64.b64decode(smtp_auth).replace('\x00', ' ')#[1:] # delete space at beginning
-                except Exception:
-                    decoded = None
-                if decoded != None:
-                    print '[%s > %s] Decoded:' % (src_ip_port, dst_ip_port), decoded
+                del mail_auths[dst_ip_port]
+            # SMTP failed
+            elif full_load.startswith('535 '):
+                # Reversed the dst and src
+                printer(dst_ip_port, src_ip_port, a_f)
+                found = True
+                del mail_auths[dst_ip_port]
+            # IMAP/POP/SMTP failed
+            elif 'auth' in full_load.lower() and 'fail' in full_load.lower():
+                # Reversed the dst and src
+                printer(dst_ip_port, src_ip_port, a_f)
+                found = True
+                del mail_auths[dst_ip_port]
+            # IMAP auth success
+            elif ' OK [' in full_load:
+                # Reversed the dst and src
+                printer(dst_ip_port, src_ip_port, a_s)
+                found = True
+                del mail_auths[dst_ip_port]
+            # IMAP auth failure
+            elif ' NO ' in full_load and 'fail' in full_load.lower():
+                # Reversed the dst and src
+                printer(dst_ip_port, src_ip_port, a_f)
+                found = True
+                del mail_auths[dst_ip_port]
+
+            mail_auths[dst_ip_port].append(ack)
+
+    else:
+        # This handles most POP/IMAP/SMTP logins but there's a at least one edge case
+        mail_auth_search = re.match(mail_auth_re, full_load, re.IGNORECASE)
+        if mail_auth_search != None:
+            auth_msg = full_load
+            # IMAP uses the number at the beginning
+            if mail_auth_search.group(1) != None:
+                auth_msg = auth_msg.split()[1:]
+            else:
+                auth_msg = auth_msg.split()
+            # Check if its a pkt like AUTH PLAIN dvcmQxIQ==
+            # rather than just an AUTH PLAIN
+            if len(auth_msg) > 2:
+                mail_creds = ' '.join(auth_msg[2:])
+                msg = '    Mail authentication: %s' % mail_creds
+                printer(src_ip_port, dst_ip_port, msg)
+                mail_decode(src_ip_port, dst_ip_port, mail_creds)
+                del mail_auths[src_ip_port]
+                found = True
+
+            # Pkt was just the initial auth cmd, next pkt from client will hold creds
+            else:
+                # Keep the dictionary less than 100
+                if len(mail_auths) > 100:
+                    mail_auths.popitem(last=False)
+                mail_auths[src_ip_port] = [ack]
+
+        # At least 1 mail login style doesn't fit in the original regex
+        # 1 login "username" "password"
+        else:
+            edge_case1 = re.match(mail_auth_re1, full_load, re.IGNORECASE)
+            if edge_case1 != None:
+                auth_msg = full_load
+                auth_msg = auth_msg.split()
+                if 2 < len(auth_msg) < 5:
+                    mail_creds = ' '.join(auth_msg[2:])
+                    msg = '    Mail authentication: %s' % mail_creds
+                    printer(src_ip_port, dst_ip_port, msg)
+                    mail_decode(src_ip_port, dst_ip_port, mail_creds)
                     found = True
-            mail_auth = dst_ip_port
+
+    # 2nd+ client auth pkts
+    elif src_ip_port in mail_auths:
+        if seq == mail_auths[src_ip_port][-1]:
+            pass
+
+
+   # # dst_ip_port is not in mail_auths so this must be 2nd or higher client > server pkt
+   # elif src_ip_port in mail_auths:
+
+   #         str_load = str_load.replace(r'\r\n', '')
+   #         print '[%s > %s]   Mail auth: %s' % (src_ip_port, dst_ip_port, str_load)
+   #         del mail_auths[seq]
+   #         found = True
+   #         try:
+   #             decoded = base64.b64decode(str_load).replace('\x00', ' ')#[1:] # delete space at beginning
+   #         except Exception:
+   #             raise
+   #             decoded = None
+   #         if decoded != None:
+   #             print '[%s > %s]   Decoded:' % (src_ip_port, dst_ip_port), decoded
+
 
     if found == True:
         return True
@@ -234,14 +337,12 @@ def irc_logins(str_load, src_ip_port, dst_ip_port):
     '''
     Find IRC logins
     '''
-    irc_user_re = re.match(r'NICK (.+?)(\\r\\n| )', str_load)
-    irc_pass_re = re.match(r'NS IDENTIFY (.+?)(\\r\\n| )', str_load)
-    if irc_user_re:
-        print '[%s > %s] IRC nick: ' % (src_ip_port, dst_ip_port), irc_user_re.group(1).strip()
-    if irc_pass_re:
-        print '[%s > %s] IRC pass: ' % (src_ip_port, dst_ip_port), irc_user_re.group(1).strip()
-    if irc_pass_re or irc_user_re:
-        return True
+    user_search = re.match(irc_user_re, str_load)
+    pass_search = re.match(irc_pw_re, str_load)
+    if user_search:
+        return user_search.group(1).strip()
+    if pass_search:
+        return pass_search.group(1).strip()
 
 def other_parser(full_load, str_load, src_ip_port, ack, seq):
     '''
@@ -514,20 +615,24 @@ def decode64(str_load):
     try:
         decoded = base64.b64decode(load)#.replace('\x00', ' ')#[1:] # delete space at beginning
     except Exception as e:
-        print str(e)
+        raise
         decoded = None
     if decoded != None:
         print '    Decoded: %s' % decoded
+
+def printer(src_ip_port, dst_ip_port, msg):
+    print '[%s>%s] %s' % (src_ip_port, dst_ip_port, msg)
 
 def main(args):
 
     ############################### DEBUG ###############
     # Hit Ctrl-C while program is running and you can see
     # whatever variable you want within the IPython cli
-    #def signal_handler(signal, frame):
-    #    embed()
-    ##    sniff(iface=conf.iface, prn=pkt_parser, store=0)
-    #signal.signal(signal.SIGINT, signal_handler)
+    def signal_handler(signal, frame):
+        embed()
+    #    sniff(iface=conf.iface, prn=pkt_parser, store=0)
+        sys.exit()
+    signal.signal(signal.SIGINT, signal_handler)
     #####################################################
 
     # Read packets from either pcap or interface
@@ -535,6 +640,7 @@ def main(args):
         try:
             pcap = rdpcap(args.pcap)
         except Exception:
+            raise
             exit('[-] Could not open %s' % args.pcap)
         for pkt in pcap:
             pkt_parser(pkt)
