@@ -167,19 +167,24 @@ def pkt_parser(pkt):
                 return
 
         # HTTP and other protocols that run on TCP + a raw load
-        other_parser(full_load, str_load, src_ip_port, ack, seq)
+        other_parser(full_load, src_ip_port, ack, seq)
 
 def parse_ftp(str_load, src_ip_port, dst_ip_port):
     '''
     Parse out FTP creds
     '''
+    # FTP and POP use idential client > server auth pkts
     ftp_user = re.match(ftp_user_re, str_load)
     ftp_pass = re.match(ftp_pw_re, str_load)
     if ftp_user:
-        print '[%s]>[%s]   FTP User:' % (src_ip_port, dst_ip_port), ftp_user.group(1).strip()
+        print '[%s>%s]    FTP User:' % (src_ip_port, dst_ip_port), ftp_user.group(1).strip()
+        if src_ip_port[-3:] != ':21':
+            print '[%s>%s]    Nonstandard FTP port, see what service is running on it' % (src_ip_port, dst_ip_port)
         return True
     if ftp_pass:
-        print '[%s]>[%s]   FTP Pass:' % (src_ip_port, dst_ip_port), ftp_pass.group(1).strip()
+        print '[%s>%s]    FTP Pass:' % (src_ip_port, dst_ip_port), ftp_pass.group(1).strip()
+        if src_ip_port[-3:] != ':21':
+            print '[%s>%s]    Nonstandard FTP port, see what service is running on it'% (src_ip_port, dst_ip_port)
         return True
 
 def mail_decode(src_ip_port, dst_ip_port, mail_creds):
@@ -192,11 +197,11 @@ def mail_decode(src_ip_port, dst_ip_port, mail_creds):
         decoded = decoded.replace('\x00', ' ')
     except TypeError:
         decoded = None
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as e:
         decoded = None
 
     if decoded != None:
-        msg = '    Decoded: %s' % decoded
+        msg = '   Decoded: %s' % decoded
         printer(src_ip_port, dst_ip_port, msg)
 
 def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
@@ -211,26 +216,36 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
     # come from the server and we don't want it to look like the
     # server authenticated to the client
 
-    # LEFT OFF:
-    # How to organize this? Check if the dst server is stored already then do else: look for authorization pkt?
-    # Problem is that multiple failed attempts are all in the same tcp stream. How to reset consistently 
-    # if auth failure?
-
-    # mail_auths = 192.168.0.2:[first ack, ]
+    # mail_auths = 192.168.0.2 : [1st ack, 2nd ack...]
     global mail_auths
     found = False
 
     # Sometimes mail packets double up on the authentication lines
     # We just want the lastest one. Ex: "1 auth plain\r\n2 auth plain\r\n"
-    num = full_load.count('auth')
+    num = full_load.lower().count('auth')
     if num > 1:
         lines = full_load.count('\r\n')
         if lines > 1:
-            full_load = full_load.split('\r\n')[-1]
+            full_load = full_load.split('\r\n')[-2] # -1 is ''
+
+    # Client to server 2nd+ pkt
+    if src_ip_port in mail_auths:
+        if seq in mail_auths[src_ip_port][-1]:
+            ##### LOOK FOR CREDS HERE in the second+ client>server pkt
+            stripped = full_load.strip('\r\n')
+            msg = '   2nd+ pkt Mail authentication: %s' % stripped
+            try:
+                decoded = base64.b64decode(stripped)
+                msg = '   Mail authentication: %s' % decoded
+                printer(src_ip_port, dst_ip_port, msg)
+            except TypeError:
+                pass
+            mail_auths[src_ip_port].append(ack)
+
 
     # Server responses to client
     # seq always = last ack of tcp stream
-    if dst_ip_port in mail_auths:
+    elif dst_ip_port in mail_auths:
         if seq in mail_auths[dst_ip_port][-1]:
             # look for any kind of auth failure or success
             a_s = '   Mail authentication successful'
@@ -240,102 +255,93 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
                 # Reversed the dst and src
                 printer(dst_ip_port, src_ip_port, a_s)
                 found = True
-                del mail_auths[dst_ip_port]
+                try:
+                    del mail_auths[dst_ip_port]
+                except KeyError:
+                    pass
             # SMTP failed
             elif full_load.startswith('535 '):
                 # Reversed the dst and src
                 printer(dst_ip_port, src_ip_port, a_f)
                 found = True
-                del mail_auths[dst_ip_port]
+                try:
+                    del mail_auths[dst_ip_port]
+                except KeyError:
+                    pass
             # IMAP/POP/SMTP failed
             elif ' fail' in full_load.lower():
                 # Reversed the dst and src
                 printer(dst_ip_port, src_ip_port, a_f)
                 found = True
-                del mail_auths[dst_ip_port]
+                try:
+                    del mail_auths[dst_ip_port]
+                except KeyError:
+                    pass
             # IMAP auth success
             elif ' OK [' in full_load:
                 # Reversed the dst and src
                 printer(dst_ip_port, src_ip_port, a_s)
                 found = True
-                del mail_auths[dst_ip_port]
+                try:
+                    del mail_auths[dst_ip_port]
+                except KeyError:
+                    pass
 
-           # Just a regular server > client acknowledgement pkt
+            # Pkt was not an auth pass/fail so its just a normal server ack
+            # that it got the client's first auth pkt
             else:
-                # Keep the dictionary less than 100
                 if len(mail_auths) > 100:
                     mail_auths.popitem(last=False)
-                mail_auths[src_ip_port] = [ack]
+                mail_auths[dst_ip_port].append(ack)
 
-    # Client to server
-    elif src_ip_port in mail_auths:
-        if seq in mail_auths[src_ip_port][-1]:
-            ##### LOOK FOR CREDS HERE in the second+ client>server pkt
-            decoded = base64.b64decode(full_load.strip('\r\n'))
-            print decoded
-
-        # Client to server but it's a new TCP seq
-        # This handles most POP/IMAP/SMTP logins but there's at least one edge case
-        else:
-            mail_auth_search = re.match(mail_auth_re, full_load, re.IGNORECASE)
-            if mail_auth_search != None:
-                auth_msg = full_load
-                # IMAP uses the number at the beginning
-                if mail_auth_search.group(1) != None:
-                    auth_msg = auth_msg.split()[1:]
-                else:
-                    auth_msg = auth_msg.split()
-                # Check if its a pkt like AUTH PLAIN dvcmQxIQ==
-                # rather than just an AUTH PLAIN
-                if len(auth_msg) > 2:
-                    mail_creds = ' '.join(auth_msg[2:])
-                    msg = '    Mail authentication: %s' % mail_creds
-                    printer(src_ip_port, dst_ip_port, msg)
-                    mail_decode(src_ip_port, dst_ip_port, mail_creds)
-                    del mail_auths[src_ip_port]
-                    found = True
-
-            # At least 1 mail login style doesn't fit in the original regex
-            # 1 login "username" "password"
-            elif re.match(mail_auth_re1, full_load, re.IGNORECASE) != None:
-                auth_msg = full_load
+    # Client to server but it's a new TCP seq
+    # This handles most POP/IMAP/SMTP logins but there's at least one edge case
+    else:
+        mail_auth_search = re.match(mail_auth_re, full_load, re.IGNORECASE)
+        if mail_auth_search != None:
+            auth_msg = full_load
+            # IMAP uses the number at the beginning
+            if mail_auth_search.group(1) != None:
+                auth_msg = auth_msg.split()[1:]
+            else:
                 auth_msg = auth_msg.split()
-                if 2 < len(auth_msg) < 5:
-                    mail_creds = ' '.join(auth_msg[2:])
-                    msg = '    Mail authentication: %s' % mail_creds
-                    printer(src_ip_port, dst_ip_port, msg)
-                    mail_decode(src_ip_port, dst_ip_port, mail_creds)
-                    found = True
+            # Check if its a pkt like AUTH PLAIN dvcmQxIQ==
+            # rather than just an AUTH PLAIN
+            if len(auth_msg) > 2:
+                mail_creds = ' '.join(auth_msg[2:])
+                msg = '   Mail authentication: %s' % mail_creds
 
-            # Mail auth regex is none and src_ip_port is not in mail_auths
+                ######### DEBUG ###########
+                if 'auth' in mail_creds.lower():
+                    print '"auth" found in mail_creds, embedding interpreter to debug'
+                    embed()
+                ###########################
+
+                printer(src_ip_port, dst_ip_port, msg)
+                mail_decode(src_ip_port, dst_ip_port, mail_creds)
+                try:
+                    del mail_auths[src_ip_port]
+                except KeyError:
+                    pass
+                found = True
+
+            # Mail auth regex was found and src_ip_port is not in mail_auths
             # Pkt was just the initial auth cmd, next pkt from client will hold creds
-            else:
-                # Keep the dictionary less than 100
-                if len(mail_auths) > 100:
-                    mail_auths.popitem(last=False)
-                mail_auths[src_ip_port] = [ack]
+            if len(mail_auths) > 100:
+                mail_auths.popitem(last=False)
+            mail_auths[src_ip_port] = [ack]
 
-    # 2nd+ client auth pkts
-    elif src_ip_port in mail_auths:
-        if seq == mail_auths[src_ip_port][-1]:
-            pass
-
-
-   # # dst_ip_port is not in mail_auths so this must be 2nd or higher client > server pkt
-   # elif src_ip_port in mail_auths:
-
-   #         str_load = str_load.replace(r'\r\n', '')
-   #         print '[%s > %s]   Mail auth: %s' % (src_ip_port, dst_ip_port, str_load)
-   #         del mail_auths[seq]
-   #         found = True
-   #         try:
-   #             decoded = base64.b64decode(str_load).replace('\x00', ' ')#[1:] # delete space at beginning
-   #         except Exception:
-   #             raise
-   #             decoded = None
-   #         if decoded != None:
-   #             print '[%s > %s]   Decoded:' % (src_ip_port, dst_ip_port), decoded
-
+        # At least 1 mail login style doesn't fit in the original regex:
+        #     1 login "username" "password"
+        elif re.match(mail_auth_re1, full_load, re.IGNORECASE) != None:
+            auth_msg = full_load
+            auth_msg = auth_msg.split()
+            if 2 < len(auth_msg) < 5:
+                mail_creds = ' '.join(auth_msg[2:])
+                msg = '   Mail authentication: %s' % mail_creds
+                printer(src_ip_port, dst_ip_port, msg)
+                mail_decode(src_ip_port, dst_ip_port, mail_creds)
+                found = True
 
     if found == True:
         return True
@@ -351,7 +357,7 @@ def irc_logins(str_load, src_ip_port, dst_ip_port):
     if pass_search:
         return pass_search.group(1).strip()
 
-def other_parser(full_load, str_load, src_ip_port, ack, seq):
+def other_parser(full_load, src_ip_port, ack, seq):
     '''
     Pull out pertinent info from the parsed HTTP packet data
     '''
@@ -364,7 +370,7 @@ def other_parser(full_load, str_load, src_ip_port, ack, seq):
     method, path = parse_http_line(http_line, http_methods)
     http_url_req = get_http_url(method, path, headers)
     if http_url_req:
-        print http_url_req
+        printer(src_ip_port, None, http_url_req)
 
     if body != '':
         user_passwd = get_login_pass(body)
@@ -627,7 +633,10 @@ def decode64(str_load):
         print '    Decoded: %s' % decoded
 
 def printer(src_ip_port, dst_ip_port, msg):
-    print '[%s > %s]'.ljust(10) % (src_ip_port, dst_ip_port) + msg
+    if dst_ip_port != None:
+        print '[%s > %s] %s' % (src_ip_port, dst_ip_port, msg)
+    else:
+        print '[%s] %s' % (src_ip_port.split(':')[0], msg)
 
 def main(args):
 
@@ -684,4 +693,3 @@ if __name__ == "__main__":
             #        decoded = None
             #    if decoded != None:
             #        print '[%s > %s] Decoded:' % (src_ip_port, dst_ip_port), decoded
-
