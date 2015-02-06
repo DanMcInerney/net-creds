@@ -170,7 +170,7 @@ def pkt_parser(pkt):
                 return
 
         # HTTP and other protocols that run on TCP + a raw load
-        other_parser(src_ip_port, dst_ip_port, full_load, ack, seq)
+        other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt)
 
 ######################################################
 def ParseMSKerbv5TCP(Data):
@@ -474,7 +474,7 @@ def irc_logins(full_load):
         printer(src_ip_port, dst_ip_port, msg)
         return pass_search
 
-def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq):
+def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt):
     '''
     Pull out pertinent info from the parsed HTTP packet data
     '''
