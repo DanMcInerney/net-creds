@@ -1,4 +1,6 @@
-Sniffs passwords and hashes from an interface or pcap. Work in progress. Accurately sniffs:
+Sniffs passwords and hashes from an interface or pcap. 
+
+#Sniffs:
 
 * URLs visited
 * HTTP site logins/passwords
@@ -10,9 +12,7 @@ Sniffs passwords and hashes from an interface or pcap. Work in progress. Accurat
 * SMTP logins/passwords
 * SNMP community string
 * NTLM challenge and response hashes
-
-Adding soon:
-* KERBEROS
+* Kerberos (untested, I have no pcaps)
 
 Auto-detect the interface to sniff
 
