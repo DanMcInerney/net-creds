@@ -1,6 +1,6 @@
 Sniffs passwords and hashes from an interface or pcap. 
 
-#Sniffs:
+###Sniffs:
 
 * URLs visited
 * HTTP site logins/passwords
