@@ -2,7 +2,7 @@
 
 from os import geteuid, devnull
 import logging
-# Be quiet, you
+# shut up scapy
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import *
 conf.verb=0
@@ -20,13 +20,19 @@ from StringIO import StringIO
 from IPython import embed
 
 ##################################################################################
-# Left off:
-# Do kerberos
-# Fix mail auths so they're not using 1 global var, what if there's multiple
-# connections? Just track the auth and password packets via seq and ack
-# migiht be handling fragments wrong, what if the pcap starts with a fragment
-# how does it handle headers then? seems like it just assumes the fragment is a header
+# To do:
+#     Do kerberos
+#     What about auth failures, maybe just a regex and take out the mail-specific
+#     auth fail part?
+#     Might be handling fragments wrong, what if the pcap starts with a fragment
+#     how does it handle headers then? seems like it just assumes the fragment is
+#     a header
+#     
 ##################################################################################
+
+# Unintentional code contributor shoutouts:
+#     Laurent Gaffie writer of Pcredz
+#     psychomario writer of ntlmsspparser
 
 DN = open(devnull, 'w')
 pkt_frag_loads = OrderedDict()
@@ -36,10 +42,10 @@ mail_auths = OrderedDict()
 # Regexs
 authenticate_re = '(www-|proxy-)?authenticate'
 authorization_re = '(www-|proxy-)?authorization'
-ftp_user_re = r'USER (.+)\\r\\n'
-ftp_pw_re = r'PASS (.+)\\r\\n'
-irc_user_re = r'NICK (.+?)(\\r\\n| )'
-irc_pw_re = r'NS IDENTIFY (.+?)(\\r\\n| )'
+ftp_user_re = r'USER (.+)\r\n'
+ftp_pw_re = r'PASS (.+)\r\n'
+irc_user_re = r'NICK (.+?)((\r)?\n|\s)'
+irc_pw_re = r'NS IDENTIFY (.+)'
 mail_auth_re = '(\d+ )?(auth|authenticate) (login|plain)'
 mail_auth_re1 =  '(\d+ )?login '
 
@@ -59,8 +65,7 @@ def iface_finder():
                 l = line.split()
                 iface = l[4]
                 return iface
-    except Exception:
-        raise
+    except IOError:
         exit('[-] Could not find an internet active interface; please specify one with -i <interface>')
 
 def frag_remover(ack, load):
@@ -115,23 +120,25 @@ def pkt_parser(pkt):
     '''
     global pkt_frag_loads, mail_auths
 
-
     # Get rid of Ethernet pkts with just a raw load cuz these are usually network controls like flow control
     if pkt.haslayer(Ether) and pkt.haslayer(Raw) and not pkt.haslayer(IP) and not pkt.haslayer(IPv6):
         return
 
     if pkt.haslayer(UDP):
+        src_ip_port = str(pkt[IP].src) + ':' + str(pkt[UDP].sport)
+        dst_ip_port = str(pkt[IP].dst) + ':' + str(pkt[UDP].dport)
 
         # SNMP community strings
         if pkt.haslayer(SNMP):
-            parse_snmp(pkt[SNMP])
+            parse_snmp(src_ip_port, dst_ip_port, pkt[SNMP])
             return
 
-        #Kerberos over UDP here
-        ######################
+        # Kerberos over UDP
+        kerb_hash = ParseMSKerbv5UDP(pkt)
+        if kerb_hash:
+            printer(src_ip_port, dst_ip_port, kerb_hash)
 
     elif pkt.haslayer(TCP) and pkt.haslayer(Raw):
-        #print pkt.summary()
         ack = str(pkt[TCP].ack)
         seq = str(pkt[TCP].seq)
         src_ip_port = str(pkt[IP].src) + ':' + str(pkt[TCP].sport)
@@ -140,52 +147,167 @@ def pkt_parser(pkt):
         frag_remover(ack, load)
         pkt_frag_loads[src_ip_port] = frag_joiner(ack, src_ip_port, load)
         full_load = pkt_frag_loads[src_ip_port][ack]
-        # doing str(load) throws nonASCII character output
-        # [1:-1] just gets eliminates the single quotes at start and end
-        str_load = repr(full_load)[1:-1]
 
         # Limit the packets we regex to increase efficiency
         # 750 is a but arbitrary but some SMTP auth success pkts
         # are 500+ characters
-        if 1 < len(str_load) < 750:
+        if 1 < len(full_load) < 750:
+
+            # FTP
+            ftp_creds = parse_ftp(full_load, dst_ip_port)
+            if len(ftp_creds) > 0:
+                for msg in ftp_creds:
+                    printer(src_ip_port, dst_ip_port, msg)
+                return
 
             # Mail
             mail_creds_found = mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq)
-            if mail_creds_found:
-                return
-
-            # FTP
-            # FTP USER: xxx PASS: xxx format is copied in some POP implementations
-            ftp_pkt_found = parse_ftp(str_load, dst_ip_port, src_ip_port)
-            if ftp_pkt_found == True:
-                return
 
             # IRC
-            irc_creds = irc_logins(str_load, src_ip_port, dst_ip_port)
+            irc_creds = irc_logins(full_load)
             if irc_creds != None:
                 printer(src_ip_port, dst_ip_port, irc_creds)
                 return
 
         # HTTP and other protocols that run on TCP + a raw load
-        other_parser(full_load, src_ip_port, ack, seq)
+        other_parser(src_ip_port, dst_ip_port, full_load, ack, seq)
 
-def parse_ftp(str_load, src_ip_port, dst_ip_port):
+######################################################
+def ParseMSKerbv5TCP(Data):
+    '''
+    Taken from Pcredz
+    *Untested
+    '''
+    try:
+        MsgType = Data[21:22]
+        EncType = Data[43:44]
+        MessageType = Data[32:33]
+    except IndexError:
+        return
+
+    if MsgType == "\x0a" and EncType == "\x17" and MessageType =="\x02":
+        if Data[49:53] == "\xa2\x36\x04\x34" or Data[49:53] == "\xa2\x35\x04\x33":
+            HashLen = struct.unpack('<b',Data[50:51])[0]
+            if HashLen == 54:
+                Hash = Data[53:105]
+                SwitchHash = Hash[16:]+Hash[0:16]
+                NameLen = struct.unpack('<b',Data[153:154])[0]
+                Name = Data[154:154+NameLen]
+                DomainLen = struct.unpack('<b',Data[154+NameLen+3:154+NameLen+4])[0]
+                Domain = Data[154+NameLen+4:154+NameLen+4+DomainLen]
+                BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
+                return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+        if Data[44:48] == "\xa2\x36\x04\x34" or Data[44:48] == "\xa2\x35\x04\x33":
+            HashLen = struct.unpack('<b',Data[47:48])[0]
+            Hash = Data[48:48+HashLen]
+            SwitchHash = Hash[16:]+Hash[0:16]
+            NameLen = struct.unpack('<b',Data[HashLen+96:HashLen+96+1])[0]
+            Name = Data[HashLen+97:HashLen+97+NameLen]
+            DomainLen = struct.unpack('<b',Data[HashLen+97+NameLen+3:HashLen+97+NameLen+4])[0]
+            Domain = Data[HashLen+97+NameLen+4:HashLen+97+NameLen+4+DomainLen]
+            BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
+            return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+
+        else:
+            Hash = Data[48:100]
+            SwitchHash = Hash[16:]+Hash[0:16]
+            NameLen = struct.unpack('<b',Data[148:149])[0]
+            Name = Data[149:149+NameLen]
+            DomainLen = struct.unpack('<b',Data[149+NameLen+3:149+NameLen+4])[0]
+            Domain = Data[149+NameLen+4:149+NameLen+4+DomainLen]
+            BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
+            return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+    else:
+        return
+
+
+def ParseMSKerbv5UDP(Data):
+    '''
+    Taken from PCredz
+    *Untested
+    '''
+    try:
+        MsgType = Data[17:18]
+        EncType = Data[39:40]
+    except IndexError:
+        return
+
+    if MsgType == "\x0a" and EncType == "\x17":
+        if Data[40:44] == "\xa2\x36\x04\x34" or Data[40:44] == "\xa2\x35\x04\x33":
+            HashLen = struct.unpack('<b',Data[41:42])[0]
+            if HashLen == 54:
+                Hash = Data[44:96]
+                SwitchHash = Hash[16:]+Hash[0:16]
+                NameLen = struct.unpack('<b',Data[144:145])[0]
+                Name = Data[145:145+NameLen]
+                DomainLen = struct.unpack('<b',Data[145+NameLen+3:145+NameLen+4])[0]
+                Domain = Data[145+NameLen+4:145+NameLen+4+DomainLen]
+                BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
+                return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+            if HashLen == 53:
+                Hash = Data[44:95]
+                SwitchHash = Hash[16:]+Hash[0:16]
+                NameLen = struct.unpack('<b',Data[143:144])[0]
+                Name = Data[144:144+NameLen]
+                DomainLen = struct.unpack('<b',Data[144+NameLen+3:144+NameLen+4])[0]
+                Domain = Data[144+NameLen+4:144+NameLen+4+DomainLen]
+                BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
+                return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+
+        else:
+            HashLen = struct.unpack('<b',Data[48:49])[0]
+            Hash = Data[49:49+HashLen]
+            SwitchHash = Hash[16:]+Hash[0:16]
+            NameLen = struct.unpack('<b',Data[HashLen+97:HashLen+97+1])[0]
+            Name = Data[HashLen+98:HashLen+98+NameLen]
+            DomainLen = struct.unpack('<b',Data[HashLen+98+NameLen+3:HashLen+98+NameLen+4])[0]
+            Domain = Data[HashLen+98+NameLen+4:HashLen+98+NameLen+4+DomainLen]
+            BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
+            return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+
+    else:
+        return False
+
+def double_line_checker(full_load, count_str):
+    '''
+    Check if count_str shows up twice
+    '''
+    num = full_load.lower().count(count_str)
+    if num > 1:
+        lines = full_load.count('\r\n')
+        if lines > 1:
+            full_load = full_load.split('\r\n')[-2] # -1 is ''
+    return full_load
+
+def parse_ftp(full_load, dst_ip_port):
     '''
     Parse out FTP creds
     '''
-    # FTP and POP use idential client > server auth pkts
-    ftp_user = re.match(ftp_user_re, str_load)
-    ftp_pass = re.match(ftp_pw_re, str_load)
+    print_strs = []
+
+    # Sometimes FTP packets double up on the authentication lines
+    # We just want the lastest one. Ex: "USER danmcinerney\r\nUSER danmcinerney\r\n"
+    full_load = double_line_checker(full_load, 'USER')
+
+    # FTP and POP potentially use idential client > server auth pkts
+    ftp_user = re.match(ftp_user_re, full_load)
+    ftp_pass = re.match(ftp_pw_re, full_load)
+
     if ftp_user:
-        print '[%s>%s]    FTP User:' % (src_ip_port, dst_ip_port), ftp_user.group(1).strip()
-        if src_ip_port[-3:] != ':21':
-            print '[%s>%s]    Nonstandard FTP port, see what service is running on it' % (src_ip_port, dst_ip_port)
-        return True
-    if ftp_pass:
-        print '[%s>%s]    FTP Pass:' % (src_ip_port, dst_ip_port), ftp_pass.group(1).strip()
-        if src_ip_port[-3:] != ':21':
-            print '[%s>%s]    Nonstandard FTP port, see what service is running on it'% (src_ip_port, dst_ip_port)
-        return True
+        msg1 = '   FTP User: %s' % ftp_user.group(1).strip()
+        print_strs.append(msg1)
+        if dst_ip_port[-3:] != ':21':
+            msg2 = '   Nonstandard FTP port, confirm the service that is running on it'
+            print_strs.append(msg2)
+
+    elif ftp_pass:
+        msg1 = '   FTP Pass: %s' % ftp_pass.group(1).strip()
+        print_strs.append(msg1)
+        if dst_ip_port[-3:] != ':21':
+            msg2 = '   Nonstandard FTP port, confirm the service that is running on it'
+            print_strs.append(msg2)
+
+    return print_strs
 
 def mail_decode(src_ip_port, dst_ip_port, mail_creds):
     '''
@@ -222,18 +344,12 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
 
     # Sometimes mail packets double up on the authentication lines
     # We just want the lastest one. Ex: "1 auth plain\r\n2 auth plain\r\n"
-    num = full_load.lower().count('auth')
-    if num > 1:
-        lines = full_load.count('\r\n')
-        if lines > 1:
-            full_load = full_load.split('\r\n')[-2] # -1 is ''
+    full_load = double_line_checker(full_load, 'auth')
 
     # Client to server 2nd+ pkt
     if src_ip_port in mail_auths:
         if seq in mail_auths[src_ip_port][-1]:
-            ##### LOOK FOR CREDS HERE in the second+ client>server pkt
             stripped = full_load.strip('\r\n')
-            msg = '   2nd+ pkt Mail authentication: %s' % stripped
             try:
                 decoded = base64.b64decode(stripped)
                 msg = '   Mail authentication: %s' % decoded
@@ -242,14 +358,13 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
                 pass
             mail_auths[src_ip_port].append(ack)
 
-
     # Server responses to client
     # seq always = last ack of tcp stream
     elif dst_ip_port in mail_auths:
         if seq in mail_auths[dst_ip_port][-1]:
-            # look for any kind of auth failure or success
-            a_s = '   Mail authentication successful'
-            a_f = '   Mail authentication failed'
+            # Look for any kind of auth failure or success
+            a_s = '   Authentication successful'
+            a_f = '   Authentication failed'
             # SMTP auth was successful
             if full_load.startswith('235') and 'auth' in full_load.lower():
                 # Reversed the dst and src
@@ -310,14 +425,8 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
             if len(auth_msg) > 2:
                 mail_creds = ' '.join(auth_msg[2:])
                 msg = '   Mail authentication: %s' % mail_creds
-
-                ######### DEBUG ###########
-                if 'auth' in mail_creds.lower():
-                    print '"auth" found in mail_creds, embedding interpreter to debug'
-                    embed()
-                ###########################
-
                 printer(src_ip_port, dst_ip_port, msg)
+
                 mail_decode(src_ip_port, dst_ip_port, mail_creds)
                 try:
                     del mail_auths[src_ip_port]
@@ -334,6 +443,11 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
         # At least 1 mail login style doesn't fit in the original regex:
         #     1 login "username" "password"
         elif re.match(mail_auth_re1, full_load, re.IGNORECASE) != None:
+
+            # FTP authentication failures trigger this
+            if full_load.lower().startswith('530 login'):
+                return
+
             auth_msg = full_load
             auth_msg = auth_msg.split()
             if 2 < len(auth_msg) < 5:
@@ -346,18 +460,21 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
     if found == True:
         return True
 
-def irc_logins(str_load, src_ip_port, dst_ip_port):
+def irc_logins(full_load):
     '''
     Find IRC logins
     '''
-    user_search = re.match(irc_user_re, str_load)
-    pass_search = re.match(irc_pw_re, str_load)
+    user_search = re.match(irc_user_re, full_load)
+    pass_search = re.match(irc_pw_re, full_load)
     if user_search:
-        return user_search.group(1).strip()
+        msg = '   IRC nick: %s' % user_search.group(1)
+        return msg
     if pass_search:
-        return pass_search.group(1).strip()
+        msg = '   IRC pass: %s' % pass_search.group(1)
+        printer(src_ip_port, dst_ip_port, msg)
+        return pass_search
 
-def other_parser(full_load, src_ip_port, ack, seq):
+def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq):
     '''
     Pull out pertinent info from the parsed HTTP packet data
     '''
@@ -374,6 +491,11 @@ def other_parser(full_load, src_ip_port, ack, seq):
 
     if body != '':
         user_passwd = get_login_pass(body)
+        if user_passwd != None:
+            user_msg = '   HTTP username: %s' % user_passwd[0]
+            printer(src_ip_port, dst_ip_port, user_msg)
+            pass_msg = '   HTTP password: %s' % user_passwd[1]
+            printer(src_ip_port, dst_ip_port, pass_msg)
 
     if len(headers) == 0:
         authenticate_header = None
@@ -387,20 +509,17 @@ def other_parser(full_load, src_ip_port, ack, seq):
     if authorization_header or authenticate_header:
 
         # NETNTLM
-        parse_ntlm(authenticate_header, authorization_header, headers, ack, seq)
+        parse_ntlm(src_ip_port, dst_ip_port, authenticate_header, authorization_header, headers, ack, seq)
 
         # Basic Auth
-        parse_basic_auth(headers, authorization_header)
+        parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header)
 
-        # Kerberos over TCP?
-        #####################
+        # Kerberos over TCP
+        kerb_hash = ParseMSKerbv5TCP(pkt)
+        if kerb_hash:
+            printer(src_ip_port, dst_ip_port, kerb_hash)
 
-    ############ PRINT STUFF ###############
-    if user_passwd != None:
-        print '  User:', user_passwd[0]
-        print '  Pass:', user_passwd[1]
-
-def parse_basic_auth(headers, authorization_header):
+def parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header):
     '''
     Parse basic authentication over HTTP
     '''
@@ -410,9 +529,10 @@ def parse_basic_auth(headers, authorization_header):
         if b64_auth_re != None:
             basic_auth_b64 = b64_auth_re.group(1)
             basic_auth_creds = base64.decodestring(basic_auth_b64)
-            print '  Basic Authentication:', basic_auth_creds
+            msg = '   Basic Authentication: %s' % basic_auth_creds
+            printer(src_ip_port, dst_ip_port, msg)
 
-def parse_ntlm(authenticate_header, authorization_header, headers, ack, seq):
+def parse_ntlm(src_ip_port, dst_ip_port, authenticate_header, authorization_header, headers, ack, seq):
     '''
     Parse NTLM hashes out
     '''
@@ -426,15 +546,18 @@ def parse_ntlm(authenticate_header, authorization_header, headers, ack, seq):
         resp_header = authorization_header.group()
         hash_type, crackable_hash = parse_ntlm_resp_msg(headers, resp_header, seq)
         if hash_type and crackable_hash:
-            print  '  ', hash_type, crackable_hash
+            msg = '   %s %s' % (hash_type, crackable_hash)
+            printer(src_ip_port, dst_ip_port, msg)
 
-def parse_snmp(snmp_layer):
+def parse_snmp(src_ip_port, dst_ip_port, snmp_layer):
     '''
     Parse out the SNMP version and community string
     '''
     if type(snmp_layer.community.val) == str:
         ver = snmp_layer.version.val
-        print '  SNMPv%d community string: %s' % (ver, snmp_layer.community.val)
+        msg = '   SNMPv%d community string: %s' % (ver, snmp_layer.community.val)
+        printer(src_ip_port, dst_ip_port, msg)
+    return True
 
 def get_http_url(method, path, headers):
     '''
@@ -506,8 +629,6 @@ def parse_http_load(full_load):
     except ValueError:
         headers = full_load
         body = ''
-    except:
-        raise
     header_lines = headers.split("\r\n")
     http_line = header_lines[0]
     header_lines = [line for line in header_lines if line != http_line]
@@ -643,11 +764,11 @@ def main(args):
     ############################### DEBUG ###############
     # Hit Ctrl-C while program is running and you can see
     # whatever variable you want within the IPython cli
-    def signal_handler(signal, frame):
-        embed()
-    #    sniff(iface=conf.iface, prn=pkt_parser, store=0)
-        sys.exit()
-    signal.signal(signal.SIGINT, signal_handler)
+    #def signal_handler(signal, frame):
+    #    embed()
+    ##    sniff(iface=conf.iface, prn=pkt_parser, store=0)
+    #    sys.exit()
+    #signal.signal(signal.SIGINT, signal_handler)
     #####################################################
 
     # Read packets from either pcap or interface
@@ -655,7 +776,6 @@ def main(args):
         try:
             pcap = rdpcap(args.pcap)
         except Exception:
-            raise
             exit('[-] Could not open %s' % args.pcap)
         for pkt in pcap:
             pkt_parser(pkt)
