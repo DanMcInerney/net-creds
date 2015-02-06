@@ -27,13 +27,14 @@ from IPython import embed
 #     Might be handling fragments wrong, what if the pcap starts with a fragment
 #     how does it handle headers then? seems like it just assumes the fragment is
 #     a header
-#     
+#
 ##################################################################################
 
 # Unintentional code contributor shoutouts:
 #     Laurent Gaffie writer of Pcredz
 #     psychomario writer of ntlmsspparser
 
+logging.basicConfig(filename='credentials.txt',level=logging.INFO)
 DN = open(devnull, 'w')
 pkt_frag_loads = OrderedDict()
 challenge_acks = OrderedDict()
@@ -55,6 +56,7 @@ def parse_args():
    parser.add_argument("-i", "--interface", help="Choose an interface")
    parser.add_argument("-p", "--pcap", help="Parse info from a pcap file; -p <pcapfilename>")
    parser.add_argument("-f", "--filterip", help="Do not sniff packets from this IP address; -f 192.168.0.4")
+   parser.add_argument("-u", "--urlall", help="Display the entire URL rather than truncating at 100 characters", action="store_true")
    return parser.parse_args()
 
 def iface_finder():
@@ -124,7 +126,8 @@ def pkt_parser(pkt):
     if pkt.haslayer(Ether) and pkt.haslayer(Raw) and not pkt.haslayer(IP) and not pkt.haslayer(IPv6):
         return
 
-    if pkt.haslayer(UDP):
+    # UDP
+    if pkt.haslayer(UDP) and pkt.haslayer(IP):
         src_ip_port = str(pkt[IP].src) + ':' + str(pkt[UDP].sport)
         dst_ip_port = str(pkt[IP].dst) + ':' + str(pkt[UDP].dport)
 
@@ -138,6 +141,7 @@ def pkt_parser(pkt):
         if kerb_hash:
             printer(src_ip_port, dst_ip_port, kerb_hash)
 
+    # TCP
     elif pkt.haslayer(TCP) and pkt.haslayer(Raw):
         ack = str(pkt[TCP].ack)
         seq = str(pkt[TCP].seq)
@@ -170,9 +174,8 @@ def pkt_parser(pkt):
                 return
 
         # HTTP and other protocols that run on TCP + a raw load
-        other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt)
+        other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, parse_args().urlall)
 
-######################################################
 def ParseMSKerbv5TCP(Data):
     '''
     Taken from Pcredz
@@ -219,7 +222,6 @@ def ParseMSKerbv5TCP(Data):
             return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
     else:
         return
-
 
 def ParseMSKerbv5UDP(Data):
     '''
@@ -474,7 +476,7 @@ def irc_logins(full_load):
         printer(src_ip_port, dst_ip_port, msg)
         return pass_search
 
-def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt):
+def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, urlall):
     '''
     Pull out pertinent info from the parsed HTTP packet data
     '''
@@ -482,12 +484,16 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt):
     http_url_req = None
     host = None
     http_methods = ['GET ', 'POST ', 'CONNECT ', 'TRACE ', 'TRACK ', 'PUT ', 'DELETE ', 'HEAD ']
-    http_line, header_lines, body = parse_http_load(full_load)
+    http_line, header_lines, body = parse_http_load(full_load, http_methods)
     headers = headers_to_dict(header_lines)
-    method, path = parse_http_line(http_line, http_methods)
-    http_url_req = get_http_url(method, path, headers)
-    if http_url_req:
-        printer(src_ip_port, None, http_url_req)
+
+    if http_line != None:
+        method, path = parse_http_line(http_line, http_methods)
+        http_url_req = get_http_url(method, path, headers)
+        if http_url_req != None:
+            if urlall == None:
+                http_url_req = http_url_req[:99]
+            printer(src_ip_port, None, http_url_req)
 
     if body != '':
         user_passwd = get_login_pass(body)
@@ -620,7 +626,7 @@ def parse_http_line(http_line, http_methods):
 
     return method, path
 
-def parse_http_load(full_load):
+def parse_http_load(full_load, http_methods):
     '''
     Split the raw load into list of headers and body string
     '''
@@ -630,7 +636,13 @@ def parse_http_load(full_load):
         headers = full_load
         body = ''
     header_lines = headers.split("\r\n")
-    http_line = header_lines[0]
+
+    # Pkts may just contain hex data and no headers in which case we'll
+    # want to parse them for usernames and password
+    http_line = get_http_line(header_lines, http_methods)
+    if not http_line:
+        body == full_load
+
     header_lines = [line for line in header_lines if line != http_line]
 
     return http_line, header_lines, body
@@ -641,7 +653,9 @@ def get_http_line(header_lines, http_methods):
     '''
     for header in header_lines:
         for method in http_methods:
-            if method in header:
+            # / is the only char I can think of that's in every http_line 
+            # Shortest valid: "GET /", add check for "/"?
+            if header.startswith(method):
                 http_line = header
                 return http_line
 
@@ -755,21 +769,25 @@ def decode64(str_load):
 
 def printer(src_ip_port, dst_ip_port, msg):
     if dst_ip_port != None:
-        print '[%s > %s] %s' % (src_ip_port, dst_ip_port, msg)
+        print_str = '[%s > %s] %s' % (src_ip_port, dst_ip_port, msg)
+        # All credentials will have dst_ip_port, URLs will not
+        logging.info(print_str)
+        print print_str
     else:
-        print '[%s] %s' % (src_ip_port.split(':')[0], msg)
+        print_str = '[%s] %s' % (src_ip_port.split(':')[0], msg)
+        print print_str
 
 def main(args):
 
-    ############################### DEBUG ###############
-    # Hit Ctrl-C while program is running and you can see
-    # whatever variable you want within the IPython cli
+    ##################### DEBUG ##########################
+    ## Hit Ctrl-C while program is running and you can see
+    ## whatever variable you want within the IPython cli
     #def signal_handler(signal, frame):
     #    embed()
     ##    sniff(iface=conf.iface, prn=pkt_parser, store=0)
     #    sys.exit()
     #signal.signal(signal.SIGINT, signal_handler)
-    #####################################################
+    ######################################################
 
     # Read packets from either pcap or interface
     if args.pcap:
