@@ -143,6 +143,18 @@ def pkt_parser(pkt):
 
     # TCP
     elif pkt.haslayer(TCP) and pkt.haslayer(Raw):
+
+        ## LOOK FOR NTLM
+        #NTLMSSP1 = re.findall('NTLMSSP\\x00\\x01\\x00\\x00\\x00', str(pkt))
+        #if NTLMSSP1:
+        #    print 'NTLM1 *************************'
+        #NTLMSSP2 = re.findall('NTLMSSP\\x00\\x02\\x00\\x00\\x00', str(pkt))
+        #if NTLMSSP2:
+        #    print 'NTLM2 *************************'
+        #NTLMSSP3 = re.findall('NTLMSSP\\x00\\x03\\x00\\x00\\x00', str(pkt))
+        #if NTLMSSP3:
+        #    print 'NTLM3 *************************'
+
         ack = str(pkt[TCP].ack)
         seq = str(pkt[TCP].seq)
         src_ip_port = str(pkt[IP].src) + ':' + str(pkt[TCP].sport)
@@ -700,7 +712,6 @@ def parse_ntlm_resp_msg(headers, resp_header, seq):
     # The header value can either start with NTLM or Negotiate
     if header_val3[0] == 'NTLM' or header_val3[0] == 'Negotiate':
         msg3 = base64.decodestring(header_val3[1])
-        # What is this when it's not > 43? Is it msg1?
         if len(msg3) > 43:
             # Thx to psychomario for below
             lmlen, lmmax, lmoff, ntlen, ntmax, ntoff, domlen, dommax, domoff, userlen, usermax, useroff = struct.unpack("12xhhihhihhihhi", msg3[:44])
