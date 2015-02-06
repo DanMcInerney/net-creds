@@ -1,4 +1,4 @@
-Sniffs passwords and hashes from an interface or pcap. 
+Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenates fragmented packets and does not rely on ports for service identification.
 
 ###Sniffs
 
@@ -30,3 +30,9 @@ Choose eth0 as the interface
 Read from pcap
 
 ```sudo python net-creds.py -p pcapfile```
+
+
+####Thanks
+* Laurent Gaffie writer of PCredz
+* psychomario writer of ntlmsspparser
+
