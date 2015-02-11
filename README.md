@@ -3,15 +3,17 @@ Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenat
 ###Sniffs
 
 * URLs visited
+* POST loads sent
 * HTTP site logins/passwords
-* HTTP Basic Auth
+* HTTP basic auth
+* HTTP searches
 * FTP logins/passwords
 * IRC logins/passwords
 * POP logins/passwords
 * IMAP logins/passwords
 * SMTP logins/passwords
 * SNMP community string
-* NTLM challenge and response hashes
+* NETNTLM challenge and response hashes
 * Kerberos (untested, I have no pcaps)
 
 
