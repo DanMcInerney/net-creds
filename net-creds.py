@@ -17,17 +17,13 @@ from subprocess import Popen, PIPE
 from collections import OrderedDict
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
+from urllib import unquote
 from IPython import embed
 
 ##################################################################################
 # To do:
-#     Do kerberos
 #     What about auth failures, maybe just a regex and take out the mail-specific
 #     auth fail part?
-#     Might be handling fragments wrong, what if the pcap starts with a fragment
-#     how does it handle headers then? seems like it just assumes the fragment is
-#     a header
-#
 ##################################################################################
 
 # Unintentional code contributor shoutouts:
@@ -41,14 +37,15 @@ challenge_acks = OrderedDict()
 mail_auths = OrderedDict()
 
 # Regexs
-authenticate_re = '(www-|proxy-)?authenticate'
-authorization_re = '(www-|proxy-)?authorization'
+authenticate_re = '(www-|proxy-)?authenticate: '
+authorization_re = '(www-|proxy-)?authorization: '
 ftp_user_re = r'USER (.+)\r\n'
 ftp_pw_re = r'PASS (.+)\r\n'
 irc_user_re = r'NICK (.+?)((\r)?\n|\s)'
 irc_pw_re = r'NS IDENTIFY (.+)'
 mail_auth_re = '(\d+ )?(auth|authenticate) (login|plain)'
 mail_auth_re1 =  '(\d+ )?login '
+http_search_re = '((search|query|\?s|&q|\?q|search\?p|searchterm|keywords|command)=([^&][^&]*))'
 
 def parse_args():
    """Create the arguments"""
@@ -456,17 +453,19 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
 
         # At least 1 mail login style doesn't fit in the original regex:
         #     1 login "username" "password"
+        # This also catches FTP authentication!
+        #     230 Login successful.
         elif re.match(mail_auth_re1, full_load, re.IGNORECASE) != None:
 
             # FTP authentication failures trigger this
-            if full_load.lower().startswith('530 login'):
-                return
+            #if full_load.lower().startswith('530 login'):
+            #    return
 
             auth_msg = full_load
             auth_msg = auth_msg.split()
             if 2 < len(auth_msg) < 5:
                 mail_creds = ' '.join(auth_msg[2:])
-                msg = '   Mail authentication: %s' % mail_creds
+                msg = '   Authentication: %s' % mail_creds
                 printer(src_ip_port, dst_ip_port, msg)
                 mail_decode(src_ip_port, dst_ip_port, mail_creds)
                 found = True
@@ -494,19 +493,29 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, urlall):
     '''
     user_passwd = None
     http_url_req = None
-    host = None
+    method = None
     http_methods = ['GET ', 'POST ', 'CONNECT ', 'TRACE ', 'TRACK ', 'PUT ', 'DELETE ', 'HEAD ']
     http_line, header_lines, body = parse_http_load(full_load, http_methods)
     headers = headers_to_dict(header_lines)
+    if 'host' in headers:
+        host = headers['host']
+    else:
+        host = ''
 
     if http_line != None:
         method, path = parse_http_line(http_line, http_methods)
-        http_url_req = get_http_url(method, path, headers)
+        http_url_req = get_http_url(method, host, path, headers)
         if http_url_req != None:
-            if urlall == None:
+            if urlall == False:
                 http_url_req = http_url_req[:99]
             printer(src_ip_port, None, http_url_req)
 
+    # Print search terms
+    searched = get_http_searches(http_url_req, body, host)
+    if searched:
+        printer(src_ip_port, dst_ip_port, searched)
+
+    # Print user/pwds
     if body != '':
         user_passwd = get_login_pass(body)
         if user_passwd != None:
@@ -515,6 +524,15 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, urlall):
             pass_msg = '   HTTP password: %s' % user_passwd[1]
             printer(src_ip_port, dst_ip_port, pass_msg)
 
+    # Print POST loads
+    if method == 'POST':
+        if len(body) > 99:
+            msg = 'POST load: %s...' % body[:99]
+        else:
+            msg = 'POST load: %s' % body
+        printer(src_ip_port, None, msg)
+
+    # Look for authentication headers
     if len(headers) == 0:
         authenticate_header = None
         authorization_header = None
@@ -536,6 +554,26 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, urlall):
         kerb_hash = ParseMSKerbv5TCP(pkt)
         if kerb_hash:
             printer(src_ip_port, dst_ip_port, kerb_hash)
+
+def get_http_searches(http_url_req, body, host):
+    """ Find search terms from URLs. Prone to false positives but rather err on that side than false negatives
+    search, query, ?s, &q, ?q, search?p, searchTerm, keywords, command """
+    if http_url_req:
+        searched = re.search(http_search_re, http_url_req, re.IGNORECASE)
+    else:
+        searched = re.search(http_search_re, body, re.IGNORECASE)
+
+    if searched != None:
+        searched = searched.group(3)
+
+    if searched:
+        # Eliminate some false+ 
+        try:
+            searched = searched.decode('utf8')
+            msg = '   Searched %s: %s' % (host, unquote(searched).replace('+', ' '))
+            return msg
+        except UnicodeDecodeError:
+            return
 
 def parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header):
     '''
@@ -577,16 +615,11 @@ def parse_snmp(src_ip_port, dst_ip_port, snmp_layer):
         printer(src_ip_port, dst_ip_port, msg)
     return True
 
-def get_http_url(method, path, headers):
+def get_http_url(method, host, path, headers):
     '''
     Get the HTTP method + URL from requests
     '''
     if method != None and path != None:
-
-        if 'host' in headers:
-            host = headers['host']
-        else:
-            host = ''
 
         # Make sure the path doesn't repeat the host header
         if host != '' and not re.match('(http(s)?://)?'+host, path):
@@ -702,13 +735,17 @@ def parse_ntlm_resp_msg(headers, resp_header, seq):
     Thanks to psychomario
     '''
 
-    if seq in challenge_acks:
-        challenge = challenge_acks[seq]
-    else:
-        challenge = 'CHALLENGE NOT FOUND'
+    try:
+        if seq in challenge_acks:
+            challenge = challenge_acks[seq]
+        else:
+            challenge = 'CHALLENGE NOT FOUND'
+        header_val3 = headers[resp_header]
+        header_val3 = header_val3.split(' ', 1)
+    except Exception as e:
+        print 'line 736, keyerror?, %s' % str(e)
+        embed()
 
-    header_val3 = headers[resp_header]
-    header_val3 = header_val3.split(' ', 1)
     # The header value can either start with NTLM or Negotiate
     if header_val3[0] == 'NTLM' or header_val3[0] == 'Negotiate':
         msg3 = base64.decodestring(header_val3[1])
