@@ -24,6 +24,7 @@ from IPython import embed
 # To do:
 #     What about auth failures, maybe just a regex and take out the mail-specific
 #     auth fail part?
+#     Make http search also search post loads, bhw.com fails to find query=fsdfds
 ##################################################################################
 
 # Unintentional code contributor shoutouts:
@@ -53,7 +54,7 @@ def parse_args():
    parser.add_argument("-i", "--interface", help="Choose an interface")
    parser.add_argument("-p", "--pcap", help="Parse info from a pcap file; -p <pcapfilename>")
    parser.add_argument("-f", "--filterip", help="Do not sniff packets from this IP address; -f 192.168.0.4")
-   parser.add_argument("-u", "--urlall", help="Display the entire URL rather than truncating at 100 characters", action="store_true")
+   parser.add_argument("-v", "--verbose", help="Display entire URLs and POST loads rather than truncating at 100 characters", action="store_true")
    return parser.parse_args()
 
 def iface_finder():
@@ -183,7 +184,7 @@ def pkt_parser(pkt):
                 return
 
         # HTTP and other protocols that run on TCP + a raw load
-        other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, parse_args().urlall)
+        other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, parse_args().verbose)
 
 def ParseMSKerbv5TCP(Data):
     '''
@@ -487,7 +488,7 @@ def irc_logins(full_load):
         printer(src_ip_port, dst_ip_port, msg)
         return pass_search
 
-def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, urlall):
+def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
     '''
     Pull out pertinent info from the parsed HTTP packet data
     '''
@@ -506,7 +507,7 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, urlall):
         method, path = parse_http_line(http_line, http_methods)
         http_url_req = get_http_url(method, host, path, headers)
         if http_url_req != None:
-            if urlall == False:
+            if verbose == False:
                 http_url_req = http_url_req[:99]
             printer(src_ip_port, None, http_url_req)
 
@@ -526,10 +527,12 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, urlall):
 
     # Print POST loads
     if method == 'POST':
-        if len(body) > 99:
+        if verbose == False and len(body) > 99:
             msg = 'POST load: %s...' % body[:99]
         else:
             msg = 'POST load: %s' % body
+            if 'query' in body:
+                print body
         printer(src_ip_port, None, msg)
 
     # Look for authentication headers
@@ -567,7 +570,7 @@ def get_http_searches(http_url_req, body, host):
         searched = searched.group(3)
 
     if searched:
-        # Eliminate some false+ 
+        # Eliminate some false+
         try:
             searched = searched.decode('utf8')
             msg = '   Searched %s: %s' % (host, unquote(searched).replace('+', ' '))
