@@ -4,17 +4,18 @@ Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenat
 
 * URLs visited
 * POST loads sent
-* HTTP site logins/passwords
-* HTTP basic auth
+* HTTP form logins/passwords
+* HTTP basic auth logins/passwords
 * HTTP searches
 * FTP logins/passwords
 * IRC logins/passwords
 * POP logins/passwords
 * IMAP logins/passwords
+* Telnet logins/passwords
 * SMTP logins/passwords
 * SNMP community string
 * NETNTLM challenge and response hashes
-* Kerberos (untested, I have no pcaps)
+* Kerberos (Untested as I have no pcaps, just ripped straight from Pcredz)
 
 
 ###Examples
@@ -37,4 +38,3 @@ Read from pcap
 ####Thanks
 * Laurent Gaffie writer of PCredz
 * psychomario writer of ntlmsspparser
-

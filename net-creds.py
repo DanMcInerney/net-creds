@@ -49,7 +49,6 @@ mail_auth_re = '(\d+ )?(auth|authenticate) (login|plain)'
 mail_auth_re1 =  '(\d+ )?login '
 # Prone to false+ but prefer that to false-
 http_search_re = '((search|query|\?s|&q|\?q|search\?p|searchterm|keywords|command)=([^&][^&]*))'
-telnet_user_re = "login:|username:"
 
 def parse_args():
    """Create the arguments"""
@@ -188,6 +187,7 @@ def telnet_logins(load, src_ip_port, dst_ip_port, ack, seq, pkt):
     global telnet_stream
 
     if src_ip_port in telnet_stream:
+        # Do a utf decode in case the client sends telnet options before their username
         try:
             telnet_stream[src_ip_port] += load.decode('utf8')
         except UnicodeDecodeError:
@@ -203,7 +203,7 @@ def telnet_logins(load, src_ip_port, dst_ip_port, ack, seq, pkt):
             del telnet_stream[src_ip_port]
 
     # This part relies on the telnet packet ending in
-    # "login:", "password:", or "username:"
+    # "login:", "password:", or "username:" and being <750 chars
     # Haven't seen any false+ but this is pretty general
     # might catch some eventually
     if len(telnet_stream) > 100:
@@ -554,13 +554,12 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
             printer(src_ip_port, dst_ip_port, pass_msg)
 
     # Print POST loads
-    if method == 'POST':
+    # ocsp is a common SSL post load that's never interesting
+    if method == 'POST' and 'ocsp.' not in host:
         if verbose == False and len(body) > 99:
             msg = 'POST load: %s...' % body[:99]
         else:
             msg = 'POST load: %s' % body
-            if 'query' in body:
-                print body
         printer(src_ip_port, None, msg)
 
     # Look for authentication headers
@@ -587,17 +586,20 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
             printer(src_ip_port, dst_ip_port, kerb_hash)
 
 def get_http_searches(http_url_req, body, host):
-    """ Find search terms from URLs. Prone to false positives but rather err on that side than false negatives
-    search, query, ?s, &q, ?q, search?p, searchTerm, keywords, command """
-    if http_url_req:
+    '''
+    Find search terms from URLs. Prone to false positives but rather err on that side than false negatives
+    search, query, ?s, &q, ?q, search?p, searchTerm, keywords, command
+    '''
+    false_pos = ['i.stack.imgur.com']
+
+    searched = None
+    if http_url_req != None:
         searched = re.search(http_search_re, http_url_req, re.IGNORECASE)
-    else:
-        searched = re.search(http_search_re, body, re.IGNORECASE)
+        if searched == None:
+            searched = re.search(http_search_re, body, re.IGNORECASE)
 
-    if searched != None:
+    if searched != None and host not in false_pos:
         searched = searched.group(3)
-
-    if searched:
         # Eliminate some false+
         try:
             searched = searched.decode('utf8')
