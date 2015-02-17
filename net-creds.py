@@ -36,6 +36,7 @@ DN = open(devnull, 'w')
 pkt_frag_loads = OrderedDict()
 challenge_acks = OrderedDict()
 mail_auths = OrderedDict()
+telnet_stream = OrderedDict()
 
 # Regexs
 authenticate_re = '(www-|proxy-)?authenticate: '
@@ -46,7 +47,9 @@ irc_user_re = r'NICK (.+?)((\r)?\n|\s)'
 irc_pw_re = r'NS IDENTIFY (.+)'
 mail_auth_re = '(\d+ )?(auth|authenticate) (login|plain)'
 mail_auth_re1 =  '(\d+ )?login '
+# Prone to false+ but prefer that to false-
 http_search_re = '((search|query|\?s|&q|\?q|search\?p|searchterm|keywords|command)=([^&][^&]*))'
+telnet_user_re = "login:|username:"
 
 def parse_args():
    """Create the arguments"""
@@ -142,17 +145,6 @@ def pkt_parser(pkt):
     # TCP
     elif pkt.haslayer(TCP) and pkt.haslayer(Raw):
 
-        ## LOOK FOR NTLM
-        #NTLMSSP1 = re.findall('NTLMSSP\\x00\\x01\\x00\\x00\\x00', str(pkt))
-        #if NTLMSSP1:
-        #    print 'NTLM1 *************************'
-        #NTLMSSP2 = re.findall('NTLMSSP\\x00\\x02\\x00\\x00\\x00', str(pkt))
-        #if NTLMSSP2:
-        #    print 'NTLM2 *************************'
-        #NTLMSSP3 = re.findall('NTLMSSP\\x00\\x03\\x00\\x00\\x00', str(pkt))
-        #if NTLMSSP3:
-        #    print 'NTLM3 *************************'
-
         ack = str(pkt[TCP].ack)
         seq = str(pkt[TCP].seq)
         src_ip_port = str(pkt[IP].src) + ':' + str(pkt[TCP].sport)
@@ -165,7 +157,7 @@ def pkt_parser(pkt):
         # Limit the packets we regex to increase efficiency
         # 750 is a but arbitrary but some SMTP auth success pkts
         # are 500+ characters
-        if 1 < len(full_load) < 750:
+        if 0 < len(full_load) < 750:
 
             # FTP
             ftp_creds = parse_ftp(full_load, dst_ip_port)
@@ -183,8 +175,44 @@ def pkt_parser(pkt):
                 printer(src_ip_port, dst_ip_port, irc_creds)
                 return
 
+            # Telnet
+            telnet_creds = telnet_logins(load, src_ip_port, dst_ip_port, ack, seq, pkt)
+
         # HTTP and other protocols that run on TCP + a raw load
         other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, parse_args().verbose)
+
+def telnet_logins(load, src_ip_port, dst_ip_port, ack, seq, pkt):
+    '''
+    Catch telnet logins and passwords
+    '''
+    global telnet_stream
+
+    if src_ip_port in telnet_stream:
+        try:
+            telnet_stream[src_ip_port] += load.decode('utf8')
+        except UnicodeDecodeError:
+            pass
+
+        # \r and \r\n terminate commands in telnet
+        if '\r' in telnet_stream[src_ip_port] or '\r\n' in telnet_stream[src_ip_port]:
+            telnet_split = telnet_stream[src_ip_port].split(' ', 1)
+            cred_type = telnet_split[0]
+            value = telnet_split[1].replace('\r\n', '').replace('\r', '')
+            msg = '   Telnet %s: %s' % (cred_type, value)
+            printer(src_ip_port, dst_ip_port, msg)
+            del telnet_stream[src_ip_port]
+
+    # This part relies on the telnet packet ending in
+    # "login:", "password:", or "username:"
+    # Haven't seen any false+ but this is pretty general
+    # might catch some eventually
+    if len(telnet_stream) > 100:
+        telnet_stream.popitem(last=False)
+    mod_load = load.lower().strip()
+    if mod_load.endswith('username:') or mod_load.endswith('login:'):
+        telnet_stream[dst_ip_port] = 'username '
+    elif mod_load.endswith('password:'):
+        telnet_stream[dst_ip_port] = 'password '
 
 def ParseMSKerbv5TCP(Data):
     '''
