@@ -22,9 +22,7 @@ from IPython import embed
 
 ##################################################################################
 # To do:
-#     What about auth failures, maybe just a regex and take out the mail-specific
-#     auth fail part?
-#     Make http search also search post loads, bhw.com fails to find query=fsdfds
+# Get Kerb in tip top shape
 ##################################################################################
 
 # Unintentional code contributor shoutouts:
@@ -51,6 +49,17 @@ NTLMSSP2_re = 'NTLMSSP\x00\x02\x00\x00\x00.+'
 NTLMSSP3_re = 'NTLMSSP\x00\x03\x00\x00\x00.+'
 # Prone to false+ but prefer that to false-
 http_search_re = '((search|query|\?s|&q|\?q|search\?p|searchterm|keywords|command)=([^&][^&]*))'
+
+#Console colors
+W = '\033[0m'  # white (normal)
+R = '\033[31m'  # red
+G = '\033[32m'  # green
+O = '\033[33m'  # orange
+B = '\033[34m'  # blue
+P = '\033[35m'  # purple
+C = '\033[36m'  # cyan
+GR = '\033[37m'  # gray
+T = '\033[93m'  # tan
 
 def parse_args():
    """Create the arguments"""
@@ -156,7 +165,7 @@ def pkt_parser(pkt):
         full_load = pkt_frag_loads[src_ip_port][ack]
 
         # Limit the packets we regex to increase efficiency
-        # 750 is a but arbitrary but some SMTP auth success pkts
+        # 750 is a bit arbitrary but some SMTP auth success pkts
         # are 500+ characters
         if 0 < len(full_load) < 750:
 
@@ -177,37 +186,45 @@ def pkt_parser(pkt):
                 return
 
             # Telnet
-            telnet_creds = telnet_logins(load, src_ip_port, dst_ip_port, ack, seq, pkt)
+            telnet_logins(src_ip_port, dst_ip_port, load, ack, seq)
+            #if telnet_creds != None:
+            #    printer(src_ip_port, dst_ip_port, telnet_creds)
+            #    return
 
         # HTTP and other protocols that run on TCP + a raw load
         other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, parse_args().verbose)
 
-def telnet_logins(load, src_ip_port, dst_ip_port, ack, seq, pkt):
+def telnet_logins(src_ip_port, dst_ip_port, load, ack, seq):
     '''
     Catch telnet logins and passwords
     '''
     global telnet_stream
 
+    msg = None
+
     if src_ip_port in telnet_stream:
         # Do a utf decode in case the client sends telnet options before their username
+        # No one would care to see that
         try:
             telnet_stream[src_ip_port] += load.decode('utf8')
         except UnicodeDecodeError:
             pass
 
-        # \r and \r\n terminate commands in telnet
+        # \r or \r\n terminate commands in telnet if my pcaps are to be believed
         if '\r' in telnet_stream[src_ip_port] or '\r\n' in telnet_stream[src_ip_port]:
             telnet_split = telnet_stream[src_ip_port].split(' ', 1)
             cred_type = telnet_split[0]
             value = telnet_split[1].replace('\r\n', '').replace('\r', '')
+            # Create msg, the return variable
             msg = '   Telnet %s: %s' % (cred_type, value)
-            printer(src_ip_port, dst_ip_port, msg)
             del telnet_stream[src_ip_port]
+            printer(src_ip_port, dst_ip_port, msg)
 
     # This part relies on the telnet packet ending in
     # "login:", "password:", or "username:" and being <750 chars
     # Haven't seen any false+ but this is pretty general
     # might catch some eventually
+    # maybe use dissector.py telnet lib?
     if len(telnet_stream) > 100:
         telnet_stream.popitem(last=False)
     mod_load = load.lower().strip()
@@ -558,11 +575,15 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
     # Print POST loads
     # ocsp is a common SSL post load that's never interesting
     if method == 'POST' and 'ocsp.' not in host:
-        if verbose == False and len(body) > 99:
-            msg = 'POST load: %s...' % body[:99]
-        else:
-            msg = 'POST load: %s' % body
-        printer(src_ip_port, None, msg)
+        try:
+            if verbose == False and len(body) > 99:
+                # If it can't decode to utf8 we're probably not interested in it
+                msg = 'POST load: %s...' % body[:99].encode('utf8')
+            else:
+                msg = 'POST load: %s' % body.encode('utf8')
+            printer(src_ip_port, None, msg)
+        except UnicodeDecodeError:
+            pass
 
     # Non-NETNTLM NTLM hashes (MSSQL, DCE-RPC,SMBv1/2,LDAP, MSSQL)
     NTLMSSP2 = re.search(NTLMSSP2_re, full_load, re.DOTALL)
@@ -882,7 +903,6 @@ def printer(src_ip_port, dst_ip_port, msg):
         print print_str
 
 def main(args):
-
     ##################### DEBUG ##########################
     ## Hit Ctrl-C while program is running and you can see
     ## whatever variable you want within the IPython cli
