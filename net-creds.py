@@ -28,8 +28,8 @@ from IPython import embed
 ##################################################################################
 
 # Unintentional code contributor shoutouts:
-#     Laurent Gaffie writer of Pcredz
-#     psychomario writer of ntlmsspparser
+#     Laurent Gaffie
+#     psychomario
 
 logging.basicConfig(filename='credentials.txt',level=logging.INFO)
 DN = open(devnull, 'w')
@@ -39,14 +39,16 @@ mail_auths = OrderedDict()
 telnet_stream = OrderedDict()
 
 # Regexs
-authenticate_re = '(www-|proxy-)?authenticate: '
-authorization_re = '(www-|proxy-)?authorization: '
+authenticate_re = '(www-|proxy-)?authenticate'
+authorization_re = '(www-|proxy-)?authorization'
 ftp_user_re = r'USER (.+)\r\n'
 ftp_pw_re = r'PASS (.+)\r\n'
 irc_user_re = r'NICK (.+?)((\r)?\n|\s)'
 irc_pw_re = r'NS IDENTIFY (.+)'
 mail_auth_re = '(\d+ )?(auth|authenticate) (login|plain)'
 mail_auth_re1 =  '(\d+ )?login '
+NTLMSSP2_re = 'NTLMSSP\x00\x02\x00\x00\x00.+'
+NTLMSSP3_re = 'NTLMSSP\x00\x03\x00\x00\x00.+'
 # Prone to false+ but prefer that to false-
 http_search_re = '((search|query|\?s|&q|\?q|search\?p|searchterm|keywords|command)=([^&][^&]*))'
 
@@ -562,6 +564,16 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
             msg = 'POST load: %s' % body
         printer(src_ip_port, None, msg)
 
+    # Non-NETNTLM NTLM hashes (MSSQL, DCE-RPC,SMBv1/2,LDAP, MSSQL)
+    NTLMSSP2 = re.search(NTLMSSP2_re, full_load, re.DOTALL)
+    NTLMSSP3 = re.search(NTLMSSP3_re, full_load, re.DOTALL)
+    if NTLMSSP2:
+        parse_ntlm_chal(NTLMSSP2.group(), ack)
+    if NTLMSSP3:
+        ntlm_resp_found = parse_ntlm_resp(NTLMSSP3.group(), seq)
+        if ntlm_resp_found != None:
+            printer(src_ip_port, dst_ip_port, ntlm_resp_found)
+
     # Look for authentication headers
     if len(headers) == 0:
         authenticate_header = None
@@ -575,7 +587,9 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
     if authorization_header or authenticate_header:
 
         # NETNTLM
-        parse_ntlm(src_ip_port, dst_ip_port, authenticate_header, authorization_header, headers, ack, seq)
+        netntlm_found = parse_netntlm(authenticate_header, authorization_header, headers, ack, seq)
+        if netntlm_found != None:
+            printer(src_ip_port, dst_ip_port, netntlm_found)
 
         # Basic Auth
         parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header)
@@ -621,22 +635,21 @@ def parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header):
             msg = '   Basic Authentication: %s' % basic_auth_creds
             printer(src_ip_port, dst_ip_port, msg)
 
-def parse_ntlm(src_ip_port, dst_ip_port, authenticate_header, authorization_header, headers, ack, seq):
+def parse_netntlm(authenticate_header, authorization_header, headers, ack, seq):
     '''
     Parse NTLM hashes out
     '''
     # Type 2 challenge from server
     if authenticate_header != None:
         chal_header = authenticate_header.group()
-        challenge = parse_ntlm_chal_msg(headers, chal_header, ack)
+        parse_netntlm_chal(headers, chal_header, ack)
 
     # Type 3 response from client
     elif authorization_header != None:
         resp_header = authorization_header.group()
-        hash_type, crackable_hash = parse_ntlm_resp_msg(headers, resp_header, seq)
-        if hash_type and crackable_hash:
-            msg = '   %s %s' % (hash_type, crackable_hash)
-            printer(src_ip_port, dst_ip_port, msg)
+        msg = parse_netntlm_resp_msg(headers, resp_header, seq)
+        if msg != None:
+            return msg
 
 def parse_snmp(src_ip_port, dst_ip_port, snmp_layer):
     '''
@@ -737,63 +750,73 @@ def get_http_line(header_lines, http_methods):
                 http_line = header
                 return http_line
 
-def parse_ntlm_chal_msg(headers, chal_header, ack):
+def parse_netntlm_chal(headers, chal_header, ack):
     '''
-    Parse the server challenge
+    Parse the netntlm server challenge
     https://code.google.com/p/python-ntlm/source/browse/trunk/python26/ntlm/ntlm.py
     '''
-    global challenge_acks
-
     header_val2 = headers[chal_header]
     header_val2 = header_val2.split(' ', 1)
     # The header value can either start with NTLM or Negotiate
     if header_val2[0] == 'NTLM' or header_val2[0] == 'Negotiate':
         msg2 = header_val2[1]
         msg2 = base64.decodestring(msg2)
-        Signature = msg2[0:8]
-        msg_type = struct.unpack("<I",msg2[8:12])[0]
-        assert(msg_type==2)
-        ServerChallenge = msg2[24:32].encode('hex')
+        parse_ntlm_chal(ack, msg2)
 
-        # Keep the dict of ack:challenge to less than 50 chals
-        if len(challenge_acks) > 50:
-            challenge_acks.popitem(last=False)
-        challenge_acks[ack] = ServerChallenge
+def parse_ntlm_chal(msg2, ack):
+    '''
+    Parse server challenge
+    '''
+    global challenge_acks
 
-        return ServerChallenge
+    Signature = msg2[0:8]
+    msg_type = struct.unpack("<I",msg2[8:12])[0]
+    assert(msg_type==2)
+    ServerChallenge = msg2[24:32].encode('hex')
 
-def parse_ntlm_resp_msg(headers, resp_header, seq):
+    # Keep the dict of ack:challenge to less than 50 chals
+    if len(challenge_acks) > 50:
+        challenge_acks.popitem(last=False)
+    challenge_acks[ack] = ServerChallenge
+
+def parse_netntlm_resp_msg(headers, resp_header, seq):
     '''
     Parse the client response to the challenge
-    Thanks to psychomario
     '''
-
-    try:
-        if seq in challenge_acks:
-            challenge = challenge_acks[seq]
-        else:
-            challenge = 'CHALLENGE NOT FOUND'
-        header_val3 = headers[resp_header]
-        header_val3 = header_val3.split(' ', 1)
-    except Exception as e:
-        print 'line 736, keyerror?, %s' % str(e)
-        embed()
+    header_val3 = headers[resp_header]
+    header_val3 = header_val3.split(' ', 1)
 
     # The header value can either start with NTLM or Negotiate
     if header_val3[0] == 'NTLM' or header_val3[0] == 'Negotiate':
         msg3 = base64.decodestring(header_val3[1])
-        if len(msg3) > 43:
-            # Thx to psychomario for below
-            lmlen, lmmax, lmoff, ntlen, ntmax, ntoff, domlen, dommax, domoff, userlen, usermax, useroff = struct.unpack("12xhhihhihhihhi", msg3[:44])
-            lmhash = binascii.b2a_hex(msg3[lmoff:lmoff+lmlen])
-            nthash = binascii.b2a_hex(msg3[ntoff:ntoff+ntlen])
-            domain = msg3[domoff:domoff+domlen].replace("\0", "")
-            user = msg3[useroff:useroff+userlen].replace("\0", "")
-            if lmhash != "0"*48: #NTLM
-                return "NETNTLMv1", user+"::"+domain+":"+lmhash+":"+nthash+":"+challenge
-            else: #NTLMv2
-                return "NETNTLMv2", user+"::"+domain+":"+challenge+":"+nthash[:32]+":"+nthash[32:]
-    return None, None
+        return parse_ntlm_resp(msg3, seq)
+
+def parse_ntlm_resp(msg3, seq):
+    '''
+    Parse the 3rd msg in NTLM handshake
+    Thanks to psychomario
+    '''
+
+    if seq in challenge_acks:
+        challenge = challenge_acks[seq]
+    else:
+        challenge = 'CHALLENGE NOT FOUND'
+
+    if len(msg3) > 43:
+        # Thx to psychomario for below
+        lmlen, lmmax, lmoff, ntlen, ntmax, ntoff, domlen, dommax, domoff, userlen, usermax, useroff = struct.unpack("12xhhihhihhihhi", msg3[:44])
+        lmhash = binascii.b2a_hex(msg3[lmoff:lmoff+lmlen])
+        nthash = binascii.b2a_hex(msg3[ntoff:ntoff+ntlen])
+        domain = msg3[domoff:domoff+domlen].replace("\0", "")
+        user = msg3[useroff:useroff+userlen].replace("\0", "")
+        # Original check by psychomario, might be incorrect?
+        #if lmhash != "0"*48: #NTLMv1
+        if ntlen == 24: #NTLMv1
+            msg = '   %s %s' % ('NETNTLMv1', user+"::"+domain+":"+lmhash+":"+nthash+":"+challenge)
+            return msg
+        elif ntlen > 60: #NTLMv2
+            msg = '   %s %s' % ('NETNTLMv2', user+"::"+domain+":"+challenge+":"+nthash[:32]+":"+nthash[32:])
+            return msg
 
 def url_filter(http_url_req):
     '''
@@ -898,17 +921,3 @@ def main(args):
 
 if __name__ == "__main__":
    main(parse_args())
-
-
-            # Check for successful authentication
-            #b64_re = "(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"
-            #b64_re = r'(?:[A-Za-z0-9+/]{4}){2,}(?:[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=|[A-Za-z0-9+/][AQgw]==)'
-            #b64 = re.search(b64_re, str_load)
-            #if b64 != None:
-            #    print b64.group()
-            #    try:
-            #        decoded = base64.b64decode(b64.group()).replace('\x00', ' ')#[1:] # delete space at beginning
-            #    except Exception:
-            #        decoded = None
-            #    if decoded != None:
-            #        print '[%s > %s] Decoded:' % (src_ip_port, dst_ip_port), decoded
