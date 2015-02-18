@@ -23,6 +23,8 @@ from IPython import embed
 ##################################################################################
 # To do:
 # Get Kerb in tip top shape
+# Grab VNC hashes
+# MySQL? Can send in clear so I want that and also the hash for when it's enabled
 ##################################################################################
 
 # Unintentional code contributor shoutouts:
