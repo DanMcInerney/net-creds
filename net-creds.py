@@ -19,13 +19,14 @@ from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
 from urllib import unquote
 from IPython import embed
+import pcap
 
-##################################################################################
-# To do:
-# Get Kerb in tip top shape
-# Grab VNC hashes
-# MySQL? Can send in clear so I want that and also the hash for when it's enabled
-##################################################################################
+##########################
+# Future hashes to parse:
+# MySQL seed:hash
+# VNC
+# Oracle?
+#########################
 
 # Unintentional code contributor shoutouts:
 #     Laurent Gaffie
@@ -54,13 +55,6 @@ http_search_re = '((search|query|\?s|&q|\?q|search\?p|searchterm|keywords|comman
 
 #Console colors
 W = '\033[0m'  # white (normal)
-R = '\033[31m'  # red
-G = '\033[32m'  # green
-O = '\033[33m'  # orange
-B = '\033[34m'  # blue
-P = '\033[35m'  # purple
-C = '\033[36m'  # cyan
-GR = '\033[37m'  # gray
 T = '\033[93m'  # tan
 
 def parse_args():
@@ -135,12 +129,16 @@ def pkt_parser(pkt):
     '''
     global pkt_frag_loads, mail_auths
 
+    if pkt.haslayer(Raw):
+        load = pkt[Raw].load
+
     # Get rid of Ethernet pkts with just a raw load cuz these are usually network controls like flow control
     if pkt.haslayer(Ether) and pkt.haslayer(Raw) and not pkt.haslayer(IP) and not pkt.haslayer(IPv6):
         return
 
     # UDP
-    if pkt.haslayer(UDP) and pkt.haslayer(IP):
+    if pkt.haslayer(UDP) and pkt.haslayer(IP) and pkt.haslayer(Raw):
+
         src_ip_port = str(pkt[IP].src) + ':' + str(pkt[UDP].sport)
         dst_ip_port = str(pkt[IP].dst) + ':' + str(pkt[UDP].dport)
 
@@ -150,7 +148,8 @@ def pkt_parser(pkt):
             return
 
         # Kerberos over UDP
-        kerb_hash = ParseMSKerbv5UDP(pkt)
+        decoded = Decode_Ip_Packet(str(pkt)[14:])
+        kerb_hash = ParseMSKerbv5UDP(decoded['data'][8:])
         if kerb_hash:
             printer(src_ip_port, dst_ip_port, kerb_hash)
 
@@ -161,7 +160,6 @@ def pkt_parser(pkt):
         seq = str(pkt[TCP].seq)
         src_ip_port = str(pkt[IP].src) + ':' + str(pkt[TCP].sport)
         dst_ip_port = str(pkt[IP].dst) + ':' + str(pkt[TCP].dport)
-        load = pkt[Raw].load
         frag_remover(ack, load)
         pkt_frag_loads[src_ip_port] = frag_joiner(ack, src_ip_port, load)
         full_load = pkt_frag_loads[src_ip_port][ack]
@@ -218,7 +216,7 @@ def telnet_logins(src_ip_port, dst_ip_port, load, ack, seq):
             cred_type = telnet_split[0]
             value = telnet_split[1].replace('\r\n', '').replace('\r', '')
             # Create msg, the return variable
-            msg = '   Telnet %s: %s' % (cred_type, value)
+            msg = 'Telnet %s: %s' % (cred_type, value)
             del telnet_stream[src_ip_port]
             printer(src_ip_port, dst_ip_port, msg)
 
@@ -237,8 +235,10 @@ def telnet_logins(src_ip_port, dst_ip_port, load, ack, seq):
 
 def ParseMSKerbv5TCP(Data):
     '''
-    Taken from Pcredz
-    *Untested
+    Taken from Pcredz because I didn't want to spend the time doing this myself
+    I should probably figure this out on my own but hey, time isn't free, why reinvent the wheel?
+    Maybe replace this eventually with the kerberos python lib
+    Parses Kerberosv5 hashes from packets
     '''
     try:
         MsgType = Data[21:22]
@@ -258,7 +258,8 @@ def ParseMSKerbv5TCP(Data):
                 DomainLen = struct.unpack('<b',Data[154+NameLen+3:154+NameLen+4])[0]
                 Domain = Data[154+NameLen+4:154+NameLen+4+DomainLen]
                 BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
-                return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+                return 'MS Kerberos: %s' % BuildHash
+
         if Data[44:48] == "\xa2\x36\x04\x34" or Data[44:48] == "\xa2\x35\x04\x33":
             HashLen = struct.unpack('<b',Data[47:48])[0]
             Hash = Data[48:48+HashLen]
@@ -268,7 +269,7 @@ def ParseMSKerbv5TCP(Data):
             DomainLen = struct.unpack('<b',Data[HashLen+97+NameLen+3:HashLen+97+NameLen+4])[0]
             Domain = Data[HashLen+97+NameLen+4:HashLen+97+NameLen+4+DomainLen]
             BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
-            return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+            return 'MS Kerberos: %s' % BuildHash
 
         else:
             Hash = Data[48:100]
@@ -278,14 +279,14 @@ def ParseMSKerbv5TCP(Data):
             DomainLen = struct.unpack('<b',Data[149+NameLen+3:149+NameLen+4])[0]
             Domain = Data[149+NameLen+4:149+NameLen+4+DomainLen]
             BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
-            return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
-    else:
-        return
+            return 'MS Kerberos: %s' % BuildHash
 
 def ParseMSKerbv5UDP(Data):
     '''
-    Taken from PCredz
-    *Untested
+    Taken from Pcredz because I didn't want to spend the time doing this myself
+    I should probably figure this out on my own but hey, time isn't free why reinvent the wheel?
+    Maybe replace this eventually with the kerberos python lib
+    Parses Kerberosv5 hashes from packets
     '''
     try:
         MsgType = Data[17:18]
@@ -304,7 +305,8 @@ def ParseMSKerbv5UDP(Data):
                 DomainLen = struct.unpack('<b',Data[145+NameLen+3:145+NameLen+4])[0]
                 Domain = Data[145+NameLen+4:145+NameLen+4+DomainLen]
                 BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
-                return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+                return 'MS Kerberos: %s' % BuildHash
+
             if HashLen == 53:
                 Hash = Data[44:95]
                 SwitchHash = Hash[16:]+Hash[0:16]
@@ -313,7 +315,7 @@ def ParseMSKerbv5UDP(Data):
                 DomainLen = struct.unpack('<b',Data[144+NameLen+3:144+NameLen+4])[0]
                 Domain = Data[144+NameLen+4:144+NameLen+4+DomainLen]
                 BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
-                return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+                return 'MS Kerberos: %s' % BuildHash
 
         else:
             HashLen = struct.unpack('<b',Data[48:49])[0]
@@ -324,10 +326,19 @@ def ParseMSKerbv5UDP(Data):
             DomainLen = struct.unpack('<b',Data[HashLen+98+NameLen+3:HashLen+98+NameLen+4])[0]
             Domain = Data[HashLen+98+NameLen+4:HashLen+98+NameLen+4+DomainLen]
             BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
-            return 'MSKerb hash found: %s\n'%(BuildHash),"$krb5pa$23$"+Name+"$"+Domain+"$dummy$"
+            return 'MS Kerberos: %s' % BuildHash
 
-    else:
-        return False
+def Decode_Ip_Packet(s):
+    '''
+    Taken from PCredz, solely to get Kerb parsing
+    working until I have time to analyze Kerb pkts
+    and figure out a simpler way
+    Maybe use kerberos python lib
+    '''
+    d={}
+    d['header_len']=ord(s[0]) & 0x0f
+    d['data']=s[4*d['header_len']:]
+    return d
 
 def double_line_checker(full_load, count_str):
     '''
@@ -355,17 +366,17 @@ def parse_ftp(full_load, dst_ip_port):
     ftp_pass = re.match(ftp_pw_re, full_load)
 
     if ftp_user:
-        msg1 = '   FTP User: %s' % ftp_user.group(1).strip()
+        msg1 = 'FTP User: %s' % ftp_user.group(1).strip()
         print_strs.append(msg1)
         if dst_ip_port[-3:] != ':21':
-            msg2 = '   Nonstandard FTP port, confirm the service that is running on it'
+            msg2 = 'Nonstandard FTP port, confirm the service that is running on it'
             print_strs.append(msg2)
 
     elif ftp_pass:
-        msg1 = '   FTP Pass: %s' % ftp_pass.group(1).strip()
+        msg1 = 'FTP Pass: %s' % ftp_pass.group(1).strip()
         print_strs.append(msg1)
         if dst_ip_port[-3:] != ':21':
-            msg2 = '   Nonstandard FTP port, confirm the service that is running on it'
+            msg2 = 'Nonstandard FTP port, confirm the service that is running on it'
             print_strs.append(msg2)
 
     return print_strs
@@ -384,7 +395,7 @@ def mail_decode(src_ip_port, dst_ip_port, mail_creds):
         decoded = None
 
     if decoded != None:
-        msg = '   Decoded: %s' % decoded
+        msg = 'Decoded: %s' % decoded
         printer(src_ip_port, dst_ip_port, msg)
 
 def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
@@ -413,7 +424,7 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
             stripped = full_load.strip('\r\n')
             try:
                 decoded = base64.b64decode(stripped)
-                msg = '   Mail authentication: %s' % decoded
+                msg = 'Mail authentication: %s' % decoded
                 printer(src_ip_port, dst_ip_port, msg)
             except TypeError:
                 pass
@@ -424,8 +435,8 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
     elif dst_ip_port in mail_auths:
         if seq in mail_auths[dst_ip_port][-1]:
             # Look for any kind of auth failure or success
-            a_s = '   Authentication successful'
-            a_f = '   Authentication failed'
+            a_s = 'Authentication successful'
+            a_f = 'Authentication failed'
             # SMTP auth was successful
             if full_load.startswith('235') and 'auth' in full_load.lower():
                 # Reversed the dst and src
@@ -485,7 +496,7 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
             # rather than just an AUTH PLAIN
             if len(auth_msg) > 2:
                 mail_creds = ' '.join(auth_msg[2:])
-                msg = '   Mail authentication: %s' % mail_creds
+                msg = 'Mail authentication: %s' % mail_creds
                 printer(src_ip_port, dst_ip_port, msg)
 
                 mail_decode(src_ip_port, dst_ip_port, mail_creds)
@@ -515,7 +526,7 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
             auth_msg = auth_msg.split()
             if 2 < len(auth_msg) < 5:
                 mail_creds = ' '.join(auth_msg[2:])
-                msg = '   Authentication: %s' % mail_creds
+                msg = 'Authentication: %s' % mail_creds
                 printer(src_ip_port, dst_ip_port, msg)
                 mail_decode(src_ip_port, dst_ip_port, mail_creds)
                 found = True
@@ -530,10 +541,10 @@ def irc_logins(full_load):
     user_search = re.match(irc_user_re, full_load)
     pass_search = re.match(irc_pw_re, full_load)
     if user_search:
-        msg = '   IRC nick: %s' % user_search.group(1)
+        msg = 'IRC nick: %s' % user_search.group(1)
         return msg
     if pass_search:
-        msg = '   IRC pass: %s' % pass_search.group(1)
+        msg = 'IRC pass: %s' % pass_search.group(1)
         printer(src_ip_port, dst_ip_port, msg)
         return pass_search
 
@@ -569,9 +580,9 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
     if body != '':
         user_passwd = get_login_pass(body)
         if user_passwd != None:
-            user_msg = '   HTTP username: %s' % user_passwd[0]
+            user_msg = 'HTTP username: %s' % user_passwd[0]
             printer(src_ip_port, dst_ip_port, user_msg)
-            pass_msg = '   HTTP password: %s' % user_passwd[1]
+            pass_msg = 'HTTP password: %s' % user_passwd[1]
             printer(src_ip_port, dst_ip_port, pass_msg)
 
     # Print POST loads
@@ -586,6 +597,12 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
             printer(src_ip_port, None, msg)
         except UnicodeDecodeError:
             pass
+
+    # Kerberos over TCP
+    decoded = Decode_Ip_Packet(str(pkt)[14:])
+    kerb_hash = ParseMSKerbv5TCP(decoded['data'][20:])
+    if kerb_hash:
+        printer(src_ip_port, dst_ip_port, kerb_hash)
 
     # Non-NETNTLM NTLM hashes (MSSQL, DCE-RPC,SMBv1/2,LDAP, MSSQL)
     NTLMSSP2 = re.search(NTLMSSP2_re, full_load, re.DOTALL)
@@ -617,10 +634,6 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
         # Basic Auth
         parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header)
 
-        # Kerberos over TCP
-        kerb_hash = ParseMSKerbv5TCP(pkt)
-        if kerb_hash:
-            printer(src_ip_port, dst_ip_port, kerb_hash)
 
 def get_http_searches(http_url_req, body, host):
     '''
@@ -640,7 +653,7 @@ def get_http_searches(http_url_req, body, host):
         # Eliminate some false+
         try:
             searched = searched.decode('utf8')
-            msg = '   Searched %s: %s' % (host, unquote(searched).replace('+', ' '))
+            msg = 'Searched %s: %s' % (host, unquote(searched).replace('+', ' '))
             return msg
         except UnicodeDecodeError:
             return
@@ -655,7 +668,7 @@ def parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header):
         if b64_auth_re != None:
             basic_auth_b64 = b64_auth_re.group(1)
             basic_auth_creds = base64.decodestring(basic_auth_b64)
-            msg = '   Basic Authentication: %s' % basic_auth_creds
+            msg = 'Basic Authentication: %s' % basic_auth_creds
             printer(src_ip_port, dst_ip_port, msg)
 
 def parse_netntlm(authenticate_header, authorization_header, headers, ack, seq):
@@ -680,7 +693,7 @@ def parse_snmp(src_ip_port, dst_ip_port, snmp_layer):
     '''
     if type(snmp_layer.community.val) == str:
         ver = snmp_layer.version.val
-        msg = '   SNMPv%d community string: %s' % (ver, snmp_layer.community.val)
+        msg = 'SNMPv%d community string: %s' % (ver, snmp_layer.community.val)
         printer(src_ip_port, dst_ip_port, msg)
     return True
 
@@ -835,10 +848,10 @@ def parse_ntlm_resp(msg3, seq):
         # Original check by psychomario, might be incorrect?
         #if lmhash != "0"*48: #NTLMv1
         if ntlen == 24: #NTLMv1
-            msg = '   %s %s' % ('NETNTLMv1', user+"::"+domain+":"+lmhash+":"+nthash+":"+challenge)
+            msg = '%s %s' % ('NETNTLMv1:', user+"::"+domain+":"+lmhash+":"+nthash+":"+challenge)
             return msg
         elif ntlen > 60: #NTLMv2
-            msg = '   %s %s' % ('NETNTLMv2', user+"::"+domain+":"+challenge+":"+nthash[:32]+":"+nthash[32:])
+            msg = '%s %s' % ('NETNTLMv2:', user+"::"+domain+":"+challenge+":"+nthash[:32]+":"+nthash[32:])
             return msg
 
 def url_filter(http_url_req):
@@ -892,11 +905,11 @@ def decode64(str_load):
     except TypeError:
         decoded = None
     if decoded != None:
-        print '    Decoded: %s' % decoded
+        print ' Decoded: %s' % decoded
 
 def printer(src_ip_port, dst_ip_port, msg):
     if dst_ip_port != None:
-        print_str = '[%s > %s] %s' % (src_ip_port, dst_ip_port, msg)
+        print_str = '[%s > %s] %s%s%s' % (src_ip_port, dst_ip_port, T, msg, W)
         # All credentials will have dst_ip_port, URLs will not
         logging.info(print_str)
         print print_str

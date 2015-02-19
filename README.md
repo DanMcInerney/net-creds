@@ -14,8 +14,8 @@ Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenat
 * Telnet logins/passwords
 * SMTP logins/passwords
 * SNMP community string
-* NTLMv1/v2 (HTTP, DCE-RPC, SMBv1/v2, LDAP, MSSQL, etc)
-* Kerberos (Untested as I have no pcaps, just ripped straight from Pcredz)
+* NTLMv1/v2 all supported protocols like HTTP, SMB, LDAP, etc
+* Kerberos
 
 
 ###Examples
@@ -36,5 +36,5 @@ Read from pcap
 
 
 ####Thanks
-* Laurent Gaffie writer of PCredz
-* psychomario writer of ntlmsspparser
+* Laurent Gaffie
+* psychomario
