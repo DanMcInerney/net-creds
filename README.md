@@ -24,15 +24,17 @@ Auto-detect the interface to sniff
 
 ```sudo python net-creds.py```
 
-
 Choose eth0 as the interface
 
 ```sudo python net-creds.py -i eth0```
 
+Ignore packets to and from 192.168.0.2
+
+```sudo python net-creds.py -f 192.168.0.2```
 
 Read from pcap
 
-```sudo python net-creds.py -p pcapfile```
+```python net-creds.py -p pcapfile```
 
 
 ####Thanks
