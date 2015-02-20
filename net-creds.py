@@ -18,7 +18,7 @@ from collections import OrderedDict
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
 from urllib import unquote
-from IPython import embed
+#from IPython import embed
 import pcap
 
 ##########################
@@ -51,7 +51,8 @@ mail_auth_re1 =  '(\d+ )?login '
 NTLMSSP2_re = 'NTLMSSP\x00\x02\x00\x00\x00.+'
 NTLMSSP3_re = 'NTLMSSP\x00\x03\x00\x00\x00.+'
 # Prone to false+ but prefer that to false-
-http_search_re = '((search|query|\?s|&q|\?q|search\?p|searchterm|keywords|command)=([^&][^&]*))'
+#http_search_re = '((search|query|\?s|&q|\?q|search\?p|searchterm|keywords|command)=([^&][^&]*))'
+http_search_re = '((search|query|&q|\?q|search\?p|searchterm|keywords|keyword|command|terms|keys|question|kwd|searchPhrase)=([^&][^&]*))'
 
 #Console colors
 W = '\033[0m'  # white (normal)
@@ -580,10 +581,18 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
     if body != '':
         user_passwd = get_login_pass(body)
         if user_passwd != None:
-            user_msg = 'HTTP username: %s' % user_passwd[0]
-            printer(src_ip_port, dst_ip_port, user_msg)
-            pass_msg = 'HTTP password: %s' % user_passwd[1]
-            printer(src_ip_port, dst_ip_port, pass_msg)
+            try:
+                http_user = user_passwd[0].decode('utf8')
+                http_pass = user_passwd[1].decode('utf8')
+                # Set a limit on how long they can be prevent false+
+                if len(http_user) > 75 or len(http_pass) > 75:
+                    return
+                user_msg = 'HTTP username: %s' % http_user
+                printer(src_ip_port, dst_ip_port, user_msg)
+                pass_msg = 'HTTP password: %s' % http_pass
+                printer(src_ip_port, dst_ip_port, pass_msg)
+            except UnicodeDecodeError:
+                pass
 
     # Print POST loads
     # ocsp is a common SSL post load that's never interesting
@@ -652,11 +661,18 @@ def get_http_searches(http_url_req, body, host):
         searched = searched.group(3)
         # Eliminate some false+
         try:
+            # if it doesn't decode to utf8 it's probably not user input
             searched = searched.decode('utf8')
-            msg = 'Searched %s: %s' % (host, unquote(searched).replace('+', ' '))
-            return msg
         except UnicodeDecodeError:
             return
+        # some add sites trigger this function with single digits
+        if searched in [str(num) for num in range(0,10)]:
+            return
+        # nobody's making >100 character searches
+        if len(searched) > 100:
+            return
+        msg = 'Searched %s: %s' % (host, unquote(searched).replace('+', ' '))
+        return msg
 
 def parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header):
     '''
@@ -765,10 +781,11 @@ def parse_http_load(full_load, http_methods):
     header_lines = headers.split("\r\n")
 
     # Pkts may just contain hex data and no headers in which case we'll
-    # want to parse them for usernames and password
+    # still want to parse them for usernames and password
     http_line = get_http_line(header_lines, http_methods)
     if not http_line:
-        body == full_load
+        headers = ''
+        body = full_load
 
     header_lines = [line for line in header_lines if line != http_line]
 
@@ -780,7 +797,7 @@ def get_http_line(header_lines, http_methods):
     '''
     for header in header_lines:
         for method in http_methods:
-            # / is the only char I can think of that's in every http_line 
+            # / is the only char I can think of that's in every http_line
             # Shortest valid: "GET /", add check for "/"?
             if header.startswith(method):
                 http_line = header
@@ -921,6 +938,7 @@ def main(args):
     ##################### DEBUG ##########################
     ## Hit Ctrl-C while program is running and you can see
     ## whatever variable you want within the IPython cli
+    ## Don't forget to uncomment IPython in imports
     #def signal_handler(signal, frame):
     #    embed()
     ##    sniff(iface=conf.iface, prn=pkt_parser, store=0)
