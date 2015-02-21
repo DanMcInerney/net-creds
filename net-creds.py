@@ -18,14 +18,15 @@ from collections import OrderedDict
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
 from urllib import unquote
-#from IPython import embed
 import pcap
+#from IPython import embed
 
 ##########################
 # Future hashes to parse:
 # MySQL seed:hash
 # VNC
 # Oracle?
+# Add file carving from dissectors.py
 #########################
 
 # Unintentional code contributor shoutouts:
@@ -387,7 +388,6 @@ def mail_decode(src_ip_port, dst_ip_port, mail_creds):
     Decode base64 mail creds
     '''
     try:
-        # ENCODE or DECODE??
         decoded = base64.b64decode(mail_creds).replace('\x00', ' ').decode('utf8')
         decoded = decoded.replace('\x00', ' ')
     except TypeError:
@@ -405,11 +405,6 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
     '''
     # Handle the first packet of mail authentication
     # if the creds aren't in the first packet, save it in mail_auths
-
-    # Note that some printer() functions reverse the src and dst
-    # so as not to confuse since auth successful pkts necessarily
-    # come from the server and we don't want it to look like the
-    # server authenticated to the client
 
     # mail_auths = 192.168.0.2 : [1st ack, 2nd ack...]
     global mail_auths
@@ -569,7 +564,8 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
         http_url_req = get_http_url(method, host, path, headers)
         if http_url_req != None:
             if verbose == False:
-                http_url_req = http_url_req[:99]
+                if len(http_url_req) > 98:
+                    http_url_req = http_url_req[:99] + '...'
             printer(src_ip_port, None, http_url_req)
 
     # Print search terms
@@ -634,7 +630,6 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
             break
 
     if authorization_header or authenticate_header:
-
         # NETNTLM
         netntlm_found = parse_netntlm(authenticate_header, authorization_header, headers, ack, seq)
         if netntlm_found != None:
