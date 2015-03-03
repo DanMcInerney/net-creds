@@ -18,6 +18,7 @@ from collections import OrderedDict
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
 from urllib import unquote
+import binascii
 import pcap
 #from IPython import embed
 
@@ -836,7 +837,10 @@ def parse_netntlm_resp_msg(headers, resp_header, seq):
 
     # The header value can either start with NTLM or Negotiate
     if header_val3[0] == 'NTLM' or header_val3[0] == 'Negotiate':
-        msg3 = base64.decodestring(header_val3[1])
+        try:
+            msg3 = base64.decodestring(header_val3[1])
+        except binascii.Error:
+            return
         return parse_ntlm_resp(msg3, seq)
 
 def parse_ntlm_resp(msg3, seq):
