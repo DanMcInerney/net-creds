@@ -23,14 +23,14 @@ import pcap
 #from IPython import embed
 
 ##########################
-# Future hashes to parse:
+# Potention ToDo:
 # MySQL seed:hash
 # VNC
 # Oracle?
 # Add file carving from dissectors.py
 #########################
 
-# Unintentional code contributor shoutouts:
+# Unintentional code contributors:
 #     Laurent Gaffie
 #     psychomario
 
@@ -48,12 +48,12 @@ ftp_user_re = r'USER (.+)\r\n'
 ftp_pw_re = r'PASS (.+)\r\n'
 irc_user_re = r'NICK (.+?)((\r)?\n|\s)'
 irc_pw_re = r'NS IDENTIFY (.+)'
+irc_pw_re2 = 'nickserv :identify (.+)'
 mail_auth_re = '(\d+ )?(auth|authenticate) (login|plain)'
 mail_auth_re1 =  '(\d+ )?login '
 NTLMSSP2_re = 'NTLMSSP\x00\x02\x00\x00\x00.+'
 NTLMSSP3_re = 'NTLMSSP\x00\x03\x00\x00\x00.+'
 # Prone to false+ but prefer that to false-
-#http_search_re = '((search|query|\?s|&q|\?q|search\?p|searchterm|keywords|command)=([^&][^&]*))'
 http_search_re = '((search|query|&q|\?q|search\?p|searchterm|keywords|keyword|command|terms|keys|question|kwd|searchPhrase)=([^&][^&]*))'
 
 #Console colors
@@ -183,16 +183,13 @@ def pkt_parser(pkt):
             mail_creds_found = mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq)
 
             # IRC
-            irc_creds = irc_logins(full_load)
+            irc_creds = irc_logins(full_load, pkt)
             if irc_creds != None:
                 printer(src_ip_port, dst_ip_port, irc_creds)
                 return
 
             # Telnet
             telnet_logins(src_ip_port, dst_ip_port, load, ack, seq)
-            #if telnet_creds != None:
-            #    printer(src_ip_port, dst_ip_port, telnet_creds)
-            #    return
 
         # HTTP and other protocols that run on TCP + a raw load
         other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, parse_args().verbose)
@@ -531,19 +528,22 @@ def mail_logins(full_load, src_ip_port, dst_ip_port, ack, seq):
     if found == True:
         return True
 
-def irc_logins(full_load):
+def irc_logins(full_load, pkt):
     '''
     Find IRC logins
     '''
     user_search = re.match(irc_user_re, full_load)
     pass_search = re.match(irc_pw_re, full_load)
+    pass_search2 = re.search(irc_pw_re2, full_load.lower())
     if user_search:
         msg = 'IRC nick: %s' % user_search.group(1)
         return msg
     if pass_search:
         msg = 'IRC pass: %s' % pass_search.group(1)
-        printer(src_ip_port, dst_ip_port, msg)
-        return pass_search
+        return msg
+    if pass_search2:
+        msg = 'IRC pass: %s' % pass_search2.group(1)
+        return msg
 
 def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
     '''
@@ -909,19 +909,6 @@ def get_login_pass(body):
 
     if user and passwd:
         return (user, passwd)
-
-def decode64(str_load):
-    '''
-    Decode base64 strings
-    '''
-    #remove \r\n\r\n
-    load = str_load.replace(r'\r\n', '')
-    try:
-        decoded = base64.b64decode(load)#.replace('\x00', ' ')#[1:] # delete space at beginning
-    except TypeError:
-        decoded = None
-    if decoded != None:
-        print ' Decoded: %s' % decoded
 
 def printer(src_ip_port, dst_ip_port, msg):
     if dst_ip_port != None:
