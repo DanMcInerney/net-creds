@@ -39,13 +39,19 @@ Read from pcap
 
 ####OSX
 
-I haven't tested this on OSX but I suspect you should be able to get it to run. Install scapy:
-
-http://www.secdev.org/projects/scapy/portability.html#osx
-
-Install iproute2mac and change all references in net-creds from "/sbin/ip" to "/usr/local/bin/ip"
-
-```brew tap brona/iproute2mac brew install iproute2mac```
+Credit to [epocs](https://github.com/epocs):
+```
+sudo easy_install pip
+sudo pip install scapy
+sudo pip install pcapy
+brew install libdnet --with-python
+mkdir -p /Users/<username>/Library/Python/2.7/lib/python/site-packages
+echo 'import site; site.addsitedir("/usr/local/lib/python2.7/site-packages")' >> /Users/<username>/Library/Python/2.7/lib/python/site-packages/homebrew.pth
+sudo pip install pypcap
+brew tap brona/iproute2mac
+brew install iproute2mac
+```
+Then replace line 74 '/sbin/ip' with '/usr/local/bin/ip'.
 
 
 ####Thanks
