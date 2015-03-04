@@ -157,7 +157,7 @@ def pkt_parser(pkt):
             printer(src_ip_port, dst_ip_port, kerb_hash)
 
     # TCP
-    elif pkt.haslayer(TCP) and pkt.haslayer(Raw):
+    elif pkt.haslayer(TCP) and pkt.haslayer(Raw) and pkt.haslayer(IP):
 
         ack = str(pkt[TCP].ack)
         seq = str(pkt[TCP].seq)
