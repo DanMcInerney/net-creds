@@ -37,6 +37,17 @@ Read from pcap
 ```python net-creds.py -p pcapfile```
 
 
+####OSX
+
+I haven't tested this on OSX but I suspect you should be able to get it to run. Install scapy:
+
+http://www.secdev.org/projects/scapy/portability.html#osx
+
+Install iproute2mac and change all references in net-creds from "/sbin/ip" to "/usr/local/bin/ip"
+
+```brew tap brona/iproute2mac brew install iproute2mac```
+
+
 ####Thanks
 * Laurent Gaffie
 * psychomario
