@@ -1,4 +1,9 @@
-Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenates fragmented packets and does not rely on ports for service identification. Screenshots: http://imgur.com/opQo7Bb http://imgur.com/Kl5I6Ju
+Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenates fragmented packets and does not rely on ports for service identification. 
+
+| Screenshots |
+|:-----:|
+| ![Screenie1](http://imgur.com/opQo7Bb.png) |
+| ![Screenie2](http://imgur.com/Kl5I6Ju.png) |
 
 ###Sniffs
 
