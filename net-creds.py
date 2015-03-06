@@ -19,7 +19,7 @@ from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
 from urllib import unquote
 import binascii
-import pcap
+# Debug
 #from IPython import embed
 
 ##########################
