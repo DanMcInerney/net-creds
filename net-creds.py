@@ -210,7 +210,7 @@ def telnet_logins(src_ip_port, dst_ip_port, load, ack, seq):
         except UnicodeDecodeError:
             pass
 
-        # \r or \r\n terminate commands in telnet if my pcaps are to be believed
+        # \r or \r\n or \n terminate commands in telnet if my pcaps are to be believed
         if '\r' in telnet_stream[src_ip_port] or '\n' in telnet_stream[src_ip_port]:
             telnet_split = telnet_stream[src_ip_port].split(' ', 1)
             cred_type = telnet_split[0]
