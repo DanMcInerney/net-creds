@@ -639,7 +639,6 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
         # Basic Auth
         parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header)
 
-
 def get_http_searches(http_url_req, body, host):
     '''
     Find search terms from URLs. Prone to false positives but rather err on that side than false negatives
@@ -804,7 +803,10 @@ def parse_netntlm_chal(headers, chal_header, ack):
     Parse the netntlm server challenge
     https://code.google.com/p/python-ntlm/source/browse/trunk/python26/ntlm/ntlm.py
     '''
-    header_val2 = headers[chal_header]
+    try:
+        header_val2 = headers[chal_header]
+    except KeyError:
+        return
     header_val2 = header_val2.split(' ', 1)
     # The header value can either start with NTLM or Negotiate
     if header_val2[0] == 'NTLM' or header_val2[0] == 'Negotiate':
@@ -832,7 +834,10 @@ def parse_netntlm_resp_msg(headers, resp_header, seq):
     '''
     Parse the client response to the challenge
     '''
-    header_val3 = headers[resp_header]
+    try:
+        header_val3 = headers[resp_header]
+    except KeyError:
+        return
     header_val3 = header_val3.split(' ', 1)
 
     # The header value can either start with NTLM or Negotiate
