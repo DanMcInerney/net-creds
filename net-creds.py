@@ -667,7 +667,7 @@ def get_http_searches(http_url_req, body, host):
         # nobody's making >100 character searches
         if len(searched) > 100:
             return
-        msg = 'Searched %s: %s' % (host, unquote(searched).replace('+', ' '))
+        msg = 'Searched %s: %s' % (host, unquote(searched.encode('utf8')).replace('+', ' '))
         return msg
 
 def parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header):
