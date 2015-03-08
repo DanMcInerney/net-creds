@@ -211,14 +211,14 @@ def telnet_logins(src_ip_port, dst_ip_port, load, ack, seq):
             pass
 
         # \r or \r\n terminate commands in telnet if my pcaps are to be believed
-        if '\r' in telnet_stream[src_ip_port] or '\r\n' in telnet_stream[src_ip_port]:
+        if '\r' in telnet_stream[src_ip_port] or '\n' in telnet_stream[src_ip_port]:
             telnet_split = telnet_stream[src_ip_port].split(' ', 1)
             cred_type = telnet_split[0]
-            value = telnet_split[1].replace('\r\n', '').replace('\r', '')
+            value = telnet_split[1].replace('\r\n', '').replace('\r', '').replace('\n', '')
             # Create msg, the return variable
             msg = 'Telnet %s: %s' % (cred_type, value)
-            del telnet_stream[src_ip_port]
             printer(src_ip_port, dst_ip_port, msg)
+            del telnet_stream[src_ip_port]
 
     # This part relies on the telnet packet ending in
     # "login:", "password:", or "username:" and being <750 chars
@@ -674,7 +674,11 @@ def parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header):
     Parse basic authentication over HTTP
     '''
     if authorization_header:
-        header_val = headers[authorization_header.group()]
+        # authorization_header sometimes is triggered by failed ftp
+        try:
+            header_val = headers[authorization_header.group()]
+        except KeyError:
+            return
         b64_auth_re = re.match('basic (.+)', header_val, re.IGNORECASE)
         if b64_auth_re != None:
             basic_auth_b64 = b64_auth_re.group(1)
