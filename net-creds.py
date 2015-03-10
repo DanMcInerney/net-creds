@@ -288,6 +288,7 @@ def ParseMSKerbv5UDP(Data):
     Maybe replace this eventually with the kerberos python lib
     Parses Kerberosv5 hashes from packets
     '''
+
     try:
         MsgType = Data[17:18]
         EncType = Data[39:40]
@@ -295,38 +296,41 @@ def ParseMSKerbv5UDP(Data):
         return
 
     if MsgType == "\x0a" and EncType == "\x17":
-        if Data[40:44] == "\xa2\x36\x04\x34" or Data[40:44] == "\xa2\x35\x04\x33":
-            HashLen = struct.unpack('<b',Data[41:42])[0]
-            if HashLen == 54:
-                Hash = Data[44:96]
+        try:
+            if Data[40:44] == "\xa2\x36\x04\x34" or Data[40:44] == "\xa2\x35\x04\x33":
+                HashLen = struct.unpack('<b',Data[41:42])[0]
+                if HashLen == 54:
+                    Hash = Data[44:96]
+                    SwitchHash = Hash[16:]+Hash[0:16]
+                    NameLen = struct.unpack('<b',Data[144:145])[0]
+                    Name = Data[145:145+NameLen]
+                    DomainLen = struct.unpack('<b',Data[145+NameLen+3:145+NameLen+4])[0]
+                    Domain = Data[145+NameLen+4:145+NameLen+4+DomainLen]
+                    BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
+                    return 'MS Kerberos: %s' % BuildHash
+
+                if HashLen == 53:
+                    Hash = Data[44:95]
+                    SwitchHash = Hash[16:]+Hash[0:16]
+                    NameLen = struct.unpack('<b',Data[143:144])[0]
+                    Name = Data[144:144+NameLen]
+                    DomainLen = struct.unpack('<b',Data[144+NameLen+3:144+NameLen+4])[0]
+                    Domain = Data[144+NameLen+4:144+NameLen+4+DomainLen]
+                    BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
+                    return 'MS Kerberos: %s' % BuildHash
+
+            else:
+                HashLen = struct.unpack('<b',Data[48:49])[0]
+                Hash = Data[49:49+HashLen]
                 SwitchHash = Hash[16:]+Hash[0:16]
-                NameLen = struct.unpack('<b',Data[144:145])[0]
-                Name = Data[145:145+NameLen]
-                DomainLen = struct.unpack('<b',Data[145+NameLen+3:145+NameLen+4])[0]
-                Domain = Data[145+NameLen+4:145+NameLen+4+DomainLen]
+                NameLen = struct.unpack('<b',Data[HashLen+97:HashLen+97+1])[0]
+                Name = Data[HashLen+98:HashLen+98+NameLen]
+                DomainLen = struct.unpack('<b',Data[HashLen+98+NameLen+3:HashLen+98+NameLen+4])[0]
+                Domain = Data[HashLen+98+NameLen+4:HashLen+98+NameLen+4+DomainLen]
                 BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
                 return 'MS Kerberos: %s' % BuildHash
-
-            if HashLen == 53:
-                Hash = Data[44:95]
-                SwitchHash = Hash[16:]+Hash[0:16]
-                NameLen = struct.unpack('<b',Data[143:144])[0]
-                Name = Data[144:144+NameLen]
-                DomainLen = struct.unpack('<b',Data[144+NameLen+3:144+NameLen+4])[0]
-                Domain = Data[144+NameLen+4:144+NameLen+4+DomainLen]
-                BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
-                return 'MS Kerberos: %s' % BuildHash
-
-        else:
-            HashLen = struct.unpack('<b',Data[48:49])[0]
-            Hash = Data[49:49+HashLen]
-            SwitchHash = Hash[16:]+Hash[0:16]
-            NameLen = struct.unpack('<b',Data[HashLen+97:HashLen+97+1])[0]
-            Name = Data[HashLen+98:HashLen+98+NameLen]
-            DomainLen = struct.unpack('<b',Data[HashLen+98+NameLen+3:HashLen+98+NameLen+4])[0]
-            Domain = Data[HashLen+98+NameLen+4:HashLen+98+NameLen+4+DomainLen]
-            BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
-            return 'MS Kerberos: %s' % BuildHash
+        except struct.error:
+            return
 
 def Decode_Ip_Packet(s):
     '''
