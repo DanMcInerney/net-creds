@@ -927,8 +927,25 @@ def printer(src_ip_port, dst_ip_port, msg):
     if dst_ip_port != None:
         print_str = '[%s > %s] %s%s%s' % (src_ip_port, dst_ip_port, T, msg, W)
         # All credentials will have dst_ip_port, URLs will not
-        logging.info(print_str)
+
+        # Prevent identical outputs unless it's an HTTP search or POST load
+        skip = ['Searched ', 'POST load:']
+        for s in skip:
+            if s not in msg:
+                if os.path.isfile('credentials.txt'):
+                    with open('credentials.txt', 'r') as log:
+                        contents = log.read()
+                        if msg in contents:
+                            return
+
         print print_str
+
+        # Escape colors like whatweb has
+        ansi_escape = re.compile(r'\x1b[^m]*m')
+        print_str = ansi_escape.sub('', print_str)
+
+        # Log the creds
+        logging.info(print_str)
     else:
         print_str = '[%s] %s' % (src_ip_port.split(':')[0], msg)
         print print_str
