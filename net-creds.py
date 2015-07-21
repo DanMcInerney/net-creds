@@ -829,7 +829,10 @@ def parse_ntlm_chal(msg2, ack):
     global challenge_acks
 
     Signature = msg2[0:8]
-    msg_type = struct.unpack("<I",msg2[8:12])[0]
+    try:
+        msg_type = struct.unpack("<I",msg2[8:12])[0]
+    except Exception:
+        return
     assert(msg_type==2)
     ServerChallenge = msg2[24:32].encode('hex')
 
