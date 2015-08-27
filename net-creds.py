@@ -968,11 +968,11 @@ def main(args):
     # Read packets from either pcap or interface
     if args.pcap:
         try:
-            pcap = rdpcap(args.pcap)
-        except Exception:
+            for pkt in PcapReader(args.pcap):
+                pkt_parser(pkt)
+        except IOError:
             exit('[-] Could not open %s' % args.pcap)
-        for pkt in pcap:
-            pkt_parser(pkt)
+
     else:
         # Check for root
         if geteuid():
