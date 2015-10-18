@@ -686,7 +686,10 @@ def parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header):
         b64_auth_re = re.match('basic (.+)', header_val, re.IGNORECASE)
         if b64_auth_re != None:
             basic_auth_b64 = b64_auth_re.group(1)
-            basic_auth_creds = base64.decodestring(basic_auth_b64)
+            try:
+                basic_auth_creds = base64.decodestring(basic_auth_b64)
+            except Exception:
+                return
             msg = 'Basic Authentication: %s' % basic_auth_creds
             printer(src_ip_port, dst_ip_port, msg)
 
