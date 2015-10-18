@@ -821,7 +821,10 @@ def parse_netntlm_chal(headers, chal_header, ack):
     header_val2 = header_val2.split(' ', 1)
     # The header value can either start with NTLM or Negotiate
     if header_val2[0] == 'NTLM' or header_val2[0] == 'Negotiate':
-        msg2 = header_val2[1]
+        try:
+            msg2 = header_val2[1]
+        except IndexError:
+            return
         msg2 = base64.decodestring(msg2)
         parse_ntlm_chal(ack, msg2)
 
