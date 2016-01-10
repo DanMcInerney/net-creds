@@ -85,8 +85,7 @@ The net\_creds.run() function accepts the following keyword arguments:
 - _pcap_ - Parse info from a pcap file; pcap='filename.pcap'
 - _filterip_ - Do not sniff packets from this ip address
 
-Note that net\_creds.run() is a blocking call, and that running net\_creds in parallel with other modules such as
-sslstrip2 requires the use of daemon processes. For example:
+Note that net\_creds.run() is a blocking call, and that running net\_creds in parallel with other modules or code requires the use of daemon processes. For example:
 
 
 ```python
