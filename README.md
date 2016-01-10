@@ -59,6 +59,53 @@ brew install iproute2mac
 Then replace line 74 '/sbin/ip' with '/usr/local/bin/ip'.
 
 
+####Importing net_creds as a Python module
+
+net_creds can be imported and run within a Python script or larger project. To use net_creds as a module, first import it within your project file:
+
+```python
+
+	
+	import net_creds
+```
+
+Then start it by making a call to net\_creds.run() as shown below:
+
+```python
+	
+	import net_creds
+
+	net_creds.run(interface='wlan0')
+
+```
+
+The net\_creds.run() function accepts the following keyword arguments:
+
+- __interface__ - Choose an interface to listen on
+- __pcap__ - Parse info from a pcap file; pcap='filename.pcap'
+- __filterip__ - Do not sniff packets from this ip address
+
+Note that net\_creds.run() is a blocking call, and that running net\_creds in parallel with other modules or code requires the use of daemon processes. For example:
+
+
+```python
+
+	import net_creds
+	from multiprocessing import Process
+
+	def run_net_creds(interface):
+
+		net_creds.run(interface=interface)
+
+	p = Process(target=net_creds.run, args=('wlan0',))
+	p.start()
+
+	print 'Run the rest of your code here'
+
+	p.stop()
+
+```
+
 ####Thanks
 * Laurent Gaffie
 * psychomario
