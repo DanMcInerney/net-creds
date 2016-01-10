@@ -81,9 +81,9 @@ Then start it by making a call to net\_creds.run() as shown below:
 
 The net\_creds.run() function accepts the following keyword arguments:
 
-- _interface_ - Choose an interface to listen on
-- _pcap_ - Parse info from a pcap file; pcap='filename.pcap'
-- _filterip_ - Do not sniff packets from this ip address
+- __interface__ - Choose an interface to listen on
+- __pcap__ - Parse info from a pcap file; pcap='filename.pcap'
+- __filterip__ - Do not sniff packets from this ip address
 
 Note that net\_creds.run() is a blocking call, and that running net\_creds in parallel with other modules or code requires the use of daemon processes. For example:
 
