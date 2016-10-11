@@ -915,10 +915,10 @@ def get_login_pass(body):
                   'alias', 'pseudo', 'email', 'username', '_username', 'userid', 'form_loginname', 'loginname',
                   'login_id', 'loginid', 'session_key', 'sessionkey', 'pop_login', 'uid', 'id', 'user_id', 'screename',
                   'uname', 'ulogin', 'acctname', 'account', 'member', 'mailaddress', 'membername', 'login_username',
-                  'login_email', 'loginusername', 'loginemail', 'uin', 'sign-in']
+                  'login_email', 'loginusername', 'loginemail', 'uin', 'sign-in', 'usuario']
     passfields = ['ahd_password', 'pass', 'password', '_password', 'passwd', 'session_password', 'sessionpassword', 
                   'login_password', 'loginpassword', 'form_pw', 'pw', 'userpassword', 'pwd', 'upassword', 'login_password'
-                  'passwort', 'passwrd', 'wppassword', 'upasswd']
+                  'passwort', 'passwrd', 'wppassword', 'upasswd','senha','contrasena']
 
     for login in userfields:
         login_re = re.search('(%s=[^&]+)' % login, body, re.IGNORECASE)
