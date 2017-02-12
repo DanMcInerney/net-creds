@@ -18,7 +18,7 @@ from collections import OrderedDict
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
 from urllib import unquote
-import binascii
+#import binascii    #already imported on line 10
 # Debug
 #from IPython import embed
 
