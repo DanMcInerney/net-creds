@@ -5,7 +5,7 @@ Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenat
 | ![Screenie1](http://imgur.com/opQo7Bb.png) |
 | ![Screenie2](http://imgur.com/Kl5I6Ju.png) |
 
-###Sniffs
+### Sniffs
 
 * URLs visited
 * POST loads sent
@@ -23,7 +23,7 @@ Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenat
 * Kerberos
 
 
-###Examples
+### Examples
 
 Auto-detect the interface to sniff
 
@@ -42,7 +42,7 @@ Read from pcap
 ```python net-creds.py -p pcapfile```
 
 
-####OSX
+#### OSX
 
 Credit to [epocs](https://github.com/epocs):
 ```
@@ -59,6 +59,6 @@ brew install iproute2mac
 Then replace line 74 '/sbin/ip' with '/usr/local/bin/ip'.
 
 
-####Thanks
+#### Thanks
 * Laurent Gaffie
 * psychomario
