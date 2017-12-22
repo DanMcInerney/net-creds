@@ -740,15 +740,13 @@ def headers_to_dict(header_lines):
     Convert the list of header lines into a dictionary
     '''
     headers = {}
-    # Incomprehensible list comprehension flattens list of headers
-    # that are each split at ': '
-    # http://stackoverflow.com/a/406296
-    headers_list = [x for line in header_lines for x in line.split(': ', 1)]
-    headers_dict = dict(zip(headers_list[0::2], headers_list[1::2]))
-    # Make the header key (like "Content-Length") lowercase
-    for header in headers_dict:
-        headers[header.lower()] = headers_dict[header]
-
+    for line in header_lines:
+        lineList=line.split(': ', 1)
+        key=lineList[0].lower()
+        if len(lineList)>1:
+                headers[key]=lineList[1]
+        else:
+                headers[key]=""
     return headers
 
 def parse_http_line(http_line, http_methods):
@@ -828,7 +826,7 @@ def parse_netntlm_chal(headers, chal_header, ack):
         msg2 = base64.decodestring(msg2)
         parse_ntlm_chal(ack, msg2)
 
-def parse_ntlm_chal(msg2, ack):
+def parse_ntlm_chal(ack, msg2):
     '''
     Parse server challenge
     '''
