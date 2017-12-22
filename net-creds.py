@@ -1,6 +1,11 @@
 #!/usr/bin/env python2
 
-from os import geteuid, devnull
+import platform
+windows = platform.system() == "Windows"
+linux   = platform.system() == "Linux"
+
+if not windows:
+    from os import geteuid, devnull
 import logging
 # shut up scapy
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
@@ -35,7 +40,9 @@ from urllib import unquote
 #     psychomario
 
 logging.basicConfig(filename='credentials.txt',level=logging.INFO)
-DN = open(devnull, 'w')
+if not windows:
+    DN = open(devnull, 'w')
+
 pkt_frag_loads = OrderedDict()
 challenge_acks = OrderedDict()
 mail_auths = OrderedDict()
@@ -64,12 +71,26 @@ def parse_args():
    """Create the arguments"""
    parser = argparse.ArgumentParser()
    parser.add_argument("-i", "--interface", help="Choose an interface")
+   if windows:
+       parser.add_argument("-l", "--list", help="List network interfaces", action="store_true")
    parser.add_argument("-p", "--pcap", help="Parse info from a pcap file; -p <pcapfilename>")
    parser.add_argument("-f", "--filterip", help="Do not sniff packets from this IP address; -f 192.168.0.4")
    parser.add_argument("-v", "--verbose", help="Display entire URLs and POST loads rather than truncating at 100 characters", action="store_true")
    return parser.parse_args()
 
-def iface_finder():
+def list_interfaces_windows():
+    try:
+        import dnet
+    except:
+        print '[-] dnet needs to be installed in order to list interfaces'
+        return
+    
+    interfaces = dnet.intf()
+    print '[*] Found interfaces :'
+    for interface in interfaces:
+        print "    %s : hw=%s ip=%s" % (interface["name"], interface.get("addr", None), interface.get("link_addr", None))
+    
+def iface_finder_unix():
     try:
         ipr = Popen(['/sbin/ip', 'route'], stdout=PIPE, stderr=DN)
         for line in ipr.communicate()[0].splitlines():
@@ -968,7 +989,14 @@ def main(args):
     #    sys.exit()
     #signal.signal(signal.SIGINT, signal_handler)
     ######################################################
-
+    
+    if hasattr(args, "list"):
+        if windows:
+            list_interfaces_windows()
+        else:
+            print("[-] Only supported on Windows")
+        exit()
+        
     # Read packets from either pcap or interface
     if args.pcap:
         try:
@@ -979,14 +1007,16 @@ def main(args):
 
     else:
         # Check for root
-        if geteuid():
+        if not windows and geteuid():
             exit('[-] Please run as root')
 
         #Find the active interface
         if args.interface:
             conf.iface = args.interface
+        elif not windows:
+            conf.iface = iface_finder_unix()
         else:
-            conf.iface = iface_finder()
+            exit('[-] Please specify an interface')
         print '[*] Using interface:', conf.iface
 
         if args.filterip:
