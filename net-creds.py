@@ -824,9 +824,9 @@ def parse_netntlm_chal(headers, chal_header, ack):
         except IndexError:
             return
         msg2 = base64.decodestring(msg2)
-        parse_ntlm_chal(ack, msg2)
+        parse_ntlm_chal(msg2, ack)
 
-def parse_ntlm_chal(ack, msg2):
+def parse_ntlm_chal(msg2, ack):
     '''
     Parse server challenge
     '''
