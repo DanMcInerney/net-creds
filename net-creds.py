@@ -13,7 +13,8 @@ import argparse
 import signal
 import base64
 from urllib import unquote
-from subprocess import Popen, PIPE
+import platform
+from subprocess import Popen, PIPE, check_output
 from collections import OrderedDict
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
@@ -70,14 +71,17 @@ def parse_args():
    return parser.parse_args()
 
 def iface_finder():
-    try:
+    platform = platform.system()
+    if platform == 'Linux':
         ipr = Popen(['/sbin/ip', 'route'], stdout=PIPE, stderr=DN)
         for line in ipr.communicate()[0].splitlines():
             if 'default' in line:
                 l = line.split()
                 iface = l[4]
                 return iface
-    except IOError:
+    elif platform == 'Darwin':  # OSX support
+        return check_output("route get 0.0.0.0 2>/dev/null| sed -n '5p' | cut -f4 -d' '", shell=True).rstrip()
+    else:
         exit('[-] Could not find an internet active interface; please specify one with -i <interface>')
 
 def frag_remover(ack, load):
