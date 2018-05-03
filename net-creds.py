@@ -71,15 +71,15 @@ def parse_args():
    return parser.parse_args()
 
 def iface_finder():
-    platform = platform.system()
-    if platform == 'Linux':
+    system_platform = platform.system()
+    if system_platform == 'Linux':
         ipr = Popen(['/sbin/ip', 'route'], stdout=PIPE, stderr=DN)
         for line in ipr.communicate()[0].splitlines():
             if 'default' in line:
                 l = line.split()
                 iface = l[4]
                 return iface
-    elif platform == 'Darwin':  # OSX support
+    elif system_platform == 'Darwin':  # OSX support
         return check_output("route get 0.0.0.0 2>/dev/null| sed -n '5p' | cut -f4 -d' '", shell=True).rstrip()
     else:
         exit('[-] Could not find an internet active interface; please specify one with -i <interface>')
