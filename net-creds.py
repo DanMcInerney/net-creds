@@ -144,7 +144,7 @@ def pkt_parser(pkt):
         return
 
     # UDP
-    if pkt.haslayer(UDP) and pkt.haslayer(IP) and pkt.haslayer(Raw):
+    if pkt.haslayer(UDP) and pkt.haslayer(IP):
 
         src_ip_port = str(pkt[IP].src) + ':' + str(pkt[UDP].sport)
         dst_ip_port = str(pkt[IP].dst) + ':' + str(pkt[UDP].dport)
