@@ -839,9 +839,9 @@ def parse_ntlm_chal(msg2, ack):
     Signature = msg2[0:8]
     try:
         msg_type = struct.unpack("<I",msg2[8:12])[0]
+        assert(msg_type==2)
     except Exception:
         return
-    assert(msg_type==2)
     ServerChallenge = msg2[24:32].encode('hex')
 
     # Keep the dict of ack:challenge to less than 50 chals
