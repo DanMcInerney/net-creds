@@ -822,7 +822,7 @@ def parse_netntlm_chal(headers, chal_header, ack):
         return
     header_val2 = header_val2.split(' ', 1)
     # The header value can either start with NTLM or Negotiate
-    if header_val2[0] == 'NTLM' or header_val2[0] == 'Negotiate':
+    if header_val2[0] == 'NTLM' or header_val2[0].lower() == 'negotiate':
         try:
             msg2 = header_val2[1]
         except IndexError:
