@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 from os import geteuid, devnull
 import logging
@@ -12,13 +12,13 @@ import struct
 import argparse
 import signal
 import base64
-from urllib import unquote
+from urllib.parse import unquote
 import platform
 from subprocess import Popen, PIPE, check_output
 from collections import OrderedDict
-from BaseHTTPServer import BaseHTTPRequestHandler
-from StringIO import StringIO
-from urllib import unquote
+from http.server import BaseHTTPRequestHandler
+from io import StringIO
+from urllib.parse import unquote
 #import binascii    #already imported on line 10
 # Debug
 #from IPython import embed
@@ -75,7 +75,7 @@ def iface_finder():
     if system_platform == 'Linux':
         ipr = Popen(['/sbin/ip', 'route'], stdout=PIPE, stderr=DN)
         for line in ipr.communicate()[0].splitlines():
-            if 'default' in line:
+            if b'default' in line:
                 l = line.split()
                 iface = l[4]
                 return iface
@@ -138,6 +138,7 @@ def pkt_parser(pkt):
 
     if pkt.haslayer(Raw):
         load = pkt[Raw].load
+        load = load.decode('utf-8','replace')
 
     # Get rid of Ethernet pkts with just a raw load cuz these are usually network controls like flow control
     if pkt.haslayer(Ether) and pkt.haslayer(Raw) and not pkt.haslayer(IP) and not pkt.haslayer(IPv6):
@@ -221,7 +222,7 @@ def telnet_logins(src_ip_port, dst_ip_port, load, ack, seq):
             value = telnet_split[1].replace('\r\n', '').replace('\r', '').replace('\n', '')
             # Create msg, the return variable
             msg = 'Telnet %s: %s' % (cred_type, value)
-            printer(src_ip_port, dst_ip_port, msg)
+            printer(src_ip_portUTF8, dst_ip_port, msg)
             del telnet_stream[src_ip_port]
 
     # This part relies on the telnet packet ending in
@@ -352,7 +353,7 @@ def double_line_checker(full_load, count_str):
     '''
     Check if count_str shows up twice
     '''
-    num = full_load.lower().count(count_str)
+    num = full_load.lower().count((count_str))
     if num > 1:
         lines = full_load.count('\r\n')
         if lines > 1:
@@ -370,7 +371,7 @@ def parse_ftp(full_load, dst_ip_port):
     full_load = double_line_checker(full_load, 'USER')
 
     # FTP and POP potentially use idential client > server auth pkts
-    ftp_user = re.match(ftp_user_re, full_load)
+    ftp_user = (re.match(ftp_user_re, full_load))
     ftp_pass = re.match(ftp_pw_re, full_load)
 
     if ftp_user:
@@ -949,7 +950,7 @@ def printer(src_ip_port, dst_ip_port, msg):
                         if msg in contents:
                             return
 
-        print print_str
+        print(print_str)
 
         # Escape colors like whatweb has
         ansi_escape = re.compile(r'\x1b[^m]*m')
@@ -959,7 +960,7 @@ def printer(src_ip_port, dst_ip_port, msg):
         logging.info(print_str)
     else:
         print_str = '[%s] %s' % (src_ip_port.split(':')[0], msg)
-        print print_str
+        print(print_str)
 
 def main(args):
     ##################### DEBUG ##########################
@@ -991,9 +992,11 @@ def main(args):
             conf.iface = args.interface
         else:
             conf.iface = iface_finder()
-        print '[*] Using interface:', conf.iface
+        conf.iface = (conf.iface).decode('utf-8')
+        print('[*] Using interface:', conf.iface)
 
         if args.filterip:
+            # (args.filterip).decode('utf-8')
             sniff(iface=conf.iface, prn=pkt_parser, filter="not host %s" % args.filterip, store=0)
         else:
             sniff(iface=conf.iface, prn=pkt_parser, store=0)
