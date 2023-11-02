@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 from os import geteuid, devnull
 import logging
@@ -949,7 +949,7 @@ def printer(src_ip_port, dst_ip_port, msg):
                         if msg in contents:
                             return
 
-        print print_str
+        print(print_str)
 
         # Escape colors like whatweb has
         ansi_escape = re.compile(r'\x1b[^m]*m')
@@ -959,7 +959,7 @@ def printer(src_ip_port, dst_ip_port, msg):
         logging.info(print_str)
     else:
         print_str = '[%s] %s' % (src_ip_port.split(':')[0], msg)
-        print print_str
+        print(print_str)
 
 def main(args):
     ##################### DEBUG ##########################
@@ -991,7 +991,7 @@ def main(args):
             conf.iface = args.interface
         else:
             conf.iface = iface_finder()
-        print '[*] Using interface:', conf.iface
+        print('[*] Using interface:', conf.iface)
 
         if args.filterip:
             sniff(iface=conf.iface, prn=pkt_parser, filter="not host %s" % args.filterip, store=0)
